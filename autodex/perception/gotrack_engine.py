@@ -306,6 +306,7 @@ class GoTrackEngine:
 
         device_state = DeviceState(
             device=self.device,
+            device_name=str(self.device),
             model=self.model,
             camera_ids=list(frame_batch.keys()),
         )

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/home/robot/shared_data/AutoDex/content/assets/robot/allegro_description/xarm"
+    ]
+  }
+}

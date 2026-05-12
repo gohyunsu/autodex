@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""Interactive end-to-end GoTrack tracking validation.
+
+Runs FoundPose init once (or loads a saved init pose), then drives
+gotrack_daemon on capture1-6 to track the object in real time.
+
+Keyboard control:
+    c   start tracking
+    q   stop tracking and quit
+
+Live tracking pose is:
+  - saved per-frame to {out}/{obj}/{trial_ts}/poses/{frame_id:08d}.npy
+  - visualized in viser as object mesh transformed by current pose
+
+Usage (live):
+    python src/validation/perception/track_interactive.py \\
+        --obj attached_container --mode live \\
+        --auto-start-stream --stop-stream-on-exit \\
+        --prompt "object on the checkerboard"
+
+Pre-conditions:
+  - init_daemon.py running on capture1-6 (port 6893)
+  - gotrack_daemon.py running on capture1-6 (port 6892)
+  - FoundPose repre.pth and GoTrack anchor_bank present per
+    docs/distributed_tracking.md
+
+Trial output:
+    ~/shared_data/AutoDex/experiment/object6d_test_gotrack/{obj}/{trial_ts}/
+        init_pose_world.npy
+        init_timing.json
+        poses/{frame_id:08d}.npy
+        track_log.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import select
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+_FP_ROOT = REPO_ROOT / "autodex/perception/thirdparty/FoundationPose"
+if str(_FP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_FP_ROOT))
+
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
+
+ASSETS_BASE = Path.home() / "shared_data/AutoDex/foundpose_assets"
+MESH_BASE = Path.home() / "shared_data/AutoDex/object/paradex"
+EXP_OUT = Path.home() / "shared_data/AutoDex/experiment/object6d_test_gotrack"
+EXP_SRC = Path.home() / "shared_data/AutoDex/experiment/selected_100/allegro"
+EXP_SRC_ALT = Path.home() / "shared_data/AutoDex/experiment/allegro/selected_100_prev"
+DEFAULT_PC_LIST = ["capture1", "capture2", "capture3", "capture4", "capture5", "capture6"]
+DEFAULT_ANCHOR_BANK_REL = "autodex/perception/thirdparty/MV-GoTrack/anchor_banks"
+GOTRACK_ROOT = REPO_ROOT / "autodex/perception/thirdparty/MV-GoTrack"
+
+
+def ensure_anchor_bank(obj_name: str, mesh_path: Path,
+                        num_anchors: int = 256) -> Path:
+    """Generate anchor bank locally on robot PC if missing. Returns its path.
+
+    Uses sys.executable (caller is expected to run inside gotrack_cu128 env).
+    """
+    bank = REPO_ROOT / DEFAULT_ANCHOR_BANK_REL / f"{obj_name}.npz"
+    if bank.exists():
+        return bank
+    bank.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[anchor] {bank.name} missing — generating (~수 초)...")
+    cmd = [
+        sys.executable, "scripts/generate_anchor_bank.py",
+        "--mesh-path", str(mesh_path),
+        "--output-path", str(bank),
+        "--num-anchors", str(num_anchors),
+    ]
+    subprocess.run(cmd, cwd=str(GOTRACK_ROOT), check=True)
+    if not bank.exists():
+        raise RuntimeError(f"generate_anchor_bank.py did not write {bank}")
+    print(f"[anchor] generated -> {bank}")
+    return bank
+
+
+def rsync_anchor_bank_to_pcs(bank_local: Path, pc_list: List[str],
+                              parallel: bool = True) -> None:
+    """rsync anchor bank file from robot PC to each capture PC's same ~/relative path."""
+    rel = bank_local.relative_to(Path.home())
+    remote_dir = f"~/{rel.parent.as_posix()}"
+    remote_path = f"~/{rel.as_posix()}"
+
+    def _one(pc: str) -> None:
+        subprocess.run(["ssh", pc, f"mkdir -p {remote_dir}"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            ["rsync", "-az", "--checksum", str(bank_local), f"{pc}:{remote_path}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"rsync to {pc} failed: {result.stderr.strip()}")
+        print(f"[anchor] -> {pc}: ok")
+
+    print(f"[anchor] rsync {bank_local.name} to {len(pc_list)} capture PCs...")
+    if parallel:
+        with ThreadPoolExecutor(max_workers=min(len(pc_list), 8)) as ex:
+            for fut in [ex.submit(_one, pc) for pc in pc_list]:
+                fut.result()
+    else:
+        for pc in pc_list:
+            _one(pc)
+
+
+def _to_home_relative(p) -> str:
+    p = str(p)
+    home = str(Path.home())
+    if p.startswith(home + "/"):
+        return "~/" + p[len(home) + 1:]
+    return p
+
+
+def _list_episodes(obj: str, exp_root: Optional[Path] = None) -> List[Path]:
+    roots = [exp_root] if exp_root else [EXP_SRC, EXP_SRC_ALT]
+    for root in roots:
+        if root is None:
+            continue
+        obj_dir = root / obj
+        if not obj_dir.exists():
+            continue
+        out = []
+        for ep in sorted(obj_dir.iterdir()):
+            if not ep.is_dir():
+                continue
+            if (ep / "images").exists() and (ep / "cam_param/intrinsics.json").exists() \
+                    and (ep / "cam_param/extrinsics.json").exists():
+                out.append(ep)
+        if out:
+            return out
+    return []
+
+
+def _load_calib(ep: Path):
+    intr_path = ep / "cam_param/intrinsics.json"
+    extr_path = ep / "cam_param/extrinsics.json"
+    if not intr_path.exists() or not extr_path.exists():
+        intr_path = ep / "intrinsics.json"
+        extr_path = ep / "extrinsics.json"
+    with open(intr_path) as f:
+        intr_raw = json.load(f)
+    with open(extr_path) as f:
+        extr_raw = json.load(f)
+    intrinsics_full, extrinsics_full = {}, {}
+    for s, d in intr_raw.items():
+        intrinsics_full[s] = {
+            "K_orig": np.asarray(d["original_intrinsics"], dtype=np.float64).reshape(3, 3),
+            "K_undist": np.asarray(d["intrinsics_undistort"], dtype=np.float64).reshape(3, 3),
+            "dist_params": np.asarray(d["dist_params"], dtype=np.float64).reshape(-1),
+            "width": int(d["width"]), "height": int(d["height"]),
+        }
+    for s, ext in extr_raw.items():
+        a = np.asarray(ext, dtype=np.float64).reshape(-1)
+        a = (np.vstack([a.reshape(3, 4), [0, 0, 0, 1]]) if a.size == 12 else a.reshape(4, 4))
+        extrinsics_full[s] = a
+    H = next(iter(intrinsics_full.values()))["height"]
+    W = next(iter(intrinsics_full.values()))["width"]
+    return intrinsics_full, extrinsics_full, H, W
+
+
+class _Keyboard:
+    """Background single-key listener (cbreak mode on stdin)."""
+
+    def __init__(self):
+        self.start_event = threading.Event()
+        self.stop_event = threading.Event()
+        self._exit = threading.Event()
+        self._fd: Optional[int] = None
+        self._old = None
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self) -> None:
+        self._fd = sys.stdin.fileno()
+        self._old = termios.tcgetattr(self._fd)
+        tty.setcbreak(self._fd)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while not self._exit.is_set():
+            r, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if not r:
+                continue
+            try:
+                ch = sys.stdin.read(1).lower()
+            except Exception:
+                continue
+            if ch == "c":
+                self.start_event.set()
+            elif ch == "q":
+                self.stop_event.set()
+                break
+
+    def close(self) -> None:
+        self._exit.set()
+        if self._fd is not None and self._old is not None:
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+            except Exception:
+                pass
+
+
+def _set_pose_handle(handle, T: np.ndarray) -> None:
+    """Update viser frame/mesh handle from a 4x4 SE(3) matrix."""
+    from scipy.spatial.transform import Rotation
+    handle.position = tuple(np.asarray(T[:3, 3], dtype=np.float64).tolist())
+    q_xyzw = Rotation.from_matrix(T[:3, :3]).as_quat()
+    handle.wxyz = (float(q_xyzw[3]), float(q_xyzw[0]),
+                   float(q_xyzw[1]), float(q_xyzw[2]))
+
+
+def _build_viser(mesh_path: Path,
+                 extrinsics_full: Dict[str, np.ndarray],
+                 init_pose_world: np.ndarray,
+                 port: int):
+    import viser
+    import trimesh
+    from scipy.spatial.transform import Rotation
+
+    server = viser.ViserServer(port=port)
+    server.scene.add_frame("/world", show_axes=True, axes_length=0.1, axes_radius=0.003)
+
+    obj_frame = server.scene.add_frame("/object", show_axes=True,
+                                        axes_length=0.05, axes_radius=0.002)
+    obj_tm = trimesh.load(mesh_path, process=False)
+    server.scene.add_mesh_simple(
+        "/object/mesh",
+        vertices=np.asarray(obj_tm.vertices, dtype=np.float32),
+        faces=np.asarray(obj_tm.faces, dtype=np.uint32),
+        color=(220, 100, 80), opacity=0.85,
+    )
+    _set_pose_handle(obj_frame, init_pose_world)
+
+    for s, T_wc in extrinsics_full.items():
+        T_cw = np.linalg.inv(T_wc)  # cam-in-world
+        q_xyzw = Rotation.from_matrix(T_cw[:3, :3]).as_quat()
+        server.scene.add_frame(
+            f"/cam/{s}",
+            position=tuple(T_cw[:3, 3].astype(float)),
+            wxyz=(float(q_xyzw[3]), float(q_xyzw[0]),
+                  float(q_xyzw[1]), float(q_xyzw[2])),
+            show_axes=True, axes_length=0.03, axes_radius=0.0015,
+        )
+    return server, obj_frame
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--obj", type=str, required=True)
+    parser.add_argument("--mode", choices=["live", "disk"], default="live")
+    parser.add_argument("--ep", type=str, default=None)
+    parser.add_argument("--exp-root", type=str, default=None)
+    parser.add_argument("--calib-dir", type=str, default=None)
+    parser.add_argument("--prompt", type=str, default="object on the checkerboard")
+    parser.add_argument("--pc-list", type=str, nargs="+", default=DEFAULT_PC_LIST)
+    # FoundPose-init daemon ports.
+    parser.add_argument("--port-mask", type=int, default=5006)
+    parser.add_argument("--port-pose", type=int, default=5007)
+    parser.add_argument("--port-cmd", type=int, default=6893)
+    # GoTrack daemon ports.
+    parser.add_argument("--port-obs", type=int, default=1235)
+    parser.add_argument("--port-prior", type=int, default=1236)
+    parser.add_argument("--port-cmd-track", type=int, default=6892)
+    parser.add_argument("--anchor-bank", type=str, default=None,
+                        help="Path to anchor bank .npz (resolved on each capture PC). "
+                             "Default: ~/AutoDex/" + DEFAULT_ANCHOR_BANK_REL + "/{obj}.npz")
+    parser.add_argument("--num-anchors", type=int, default=256,
+                        help="Number of anchors to sample (only used if generating).")
+    parser.add_argument("--no-anchor-rsync", action="store_true",
+                        help="Skip rsync of anchor bank to capture PCs (assume already in place).")
+    parser.add_argument("--init-pose", type=str, default=None,
+                        help="Skip FoundPose init; load 4x4 pose from this .npy file.")
+    parser.add_argument("--sil-iters", type=int, default=100)
+    parser.add_argument("--sil-lr", type=float, default=0.002)
+    parser.add_argument("--timeout-s", type=float, default=120.0)
+    parser.add_argument("--min-cams-per-frame", type=int, default=6)
+    parser.add_argument("--max-frames", type=int, default=-1)
+    parser.add_argument("--out", type=str, default=str(EXP_OUT))
+    parser.add_argument("--viser-port", type=int, default=8080)
+    parser.add_argument("--no-viser", action="store_true")
+    parser.add_argument("--auto-start-stream", action="store_true")
+    parser.add_argument("--stream-fps", type=int, default=10)
+    parser.add_argument("--stream-warmup-s", type=float, default=2.0)
+    parser.add_argument("--stop-stream-on-exit", action="store_true")
+    args = parser.parse_args()
+
+    from paradex.utils.system import get_pc_ip, get_camera_list
+    from paradex.io.capture_pc.command_sender import CommandSender
+    from autodex.perception.init_orchestrator import InitOrchestrator
+    from autodex.perception.gotrack_tracker import GoTrackTracker
+
+    mesh_path = MESH_BASE / args.obj / "raw_mesh" / f"{args.obj}.obj"
+    assets_root = ASSETS_BASE / args.obj
+    if not mesh_path.exists():
+        sys.exit(f"mesh not found: {mesh_path}")
+    if not (assets_root / "object_repre/v1" / args.obj / "1/repre.pth").exists():
+        sys.exit(f"repre.pth missing for {args.obj} at {assets_root}")
+
+    if args.anchor_bank:
+        anchor_bank_path = Path(args.anchor_bank).expanduser()
+    else:
+        anchor_bank_path = ensure_anchor_bank(args.obj, mesh_path, args.num_anchors)
+    print(f"[track] mesh:        {mesh_path}")
+    print(f"[track] anchor_bank: {anchor_bank_path}")
+
+    if not args.no_anchor_rsync and not args.anchor_bank:
+        try:
+            rsync_anchor_bank_to_pcs(anchor_bank_path, args.pc_list)
+        except Exception as exc:
+            sys.exit(f"[anchor] rsync failed: {exc}\n"
+                     f"  Either fix ssh/rsync, or run with --no-anchor-rsync after "
+                     f"manually placing the file on each capture PC.")
+
+    pc_ips = [get_pc_ip(p) for p in args.pc_list]
+    pc_serials = {p: get_camera_list(p) for p in args.pc_list}
+    out_root = Path(args.out) / args.obj
+    out_root.mkdir(parents=True, exist_ok=True)
+    trial_ts = time.strftime("%Y%m%d_%H%M%S")
+    trial_dir = out_root / trial_ts
+    trial_dir.mkdir(parents=True, exist_ok=True)
+
+    ep: Optional[Path] = None
+    if args.mode == "disk":
+        exp_root = Path(args.exp_root).expanduser() if args.exp_root else None
+        eps = _list_episodes(args.obj, exp_root=exp_root)
+        if not eps:
+            searched = [exp_root] if exp_root else [EXP_SRC, EXP_SRC_ALT]
+            sys.exit(f"No episodes for {args.obj} under any of: {searched}")
+        ep = (eps[0].parent / args.ep) if args.ep else eps[0]
+        if not ep.exists():
+            sys.exit(f"episode not found: {ep}")
+        print(f"[track] mode=disk  episode={ep.name}")
+        intrinsics_full, extrinsics_full, H, W = _load_calib(ep)
+    else:
+        if args.calib_dir:
+            calib = Path(args.calib_dir).expanduser()
+        else:
+            cam_root = Path.home() / "shared_data/cam_param"
+            calib = sorted(cam_root.iterdir())[-1]
+        print(f"[track] mode=live  calib={calib.name}")
+        intrinsics_full, extrinsics_full, H, W = _load_calib(calib)
+    print(f"[track] {len(intrinsics_full)} cams  {H}x{W}")
+
+    rcc = None
+    orch: Optional[InitOrchestrator] = None
+    cmd_track: Any = None
+    tracker: Optional[GoTrackTracker] = None
+    keyboard = _Keyboard()
+    server = None
+    obj_frame = None
+    pose_log: List[Dict[str, Any]] = []
+    init_pose_world: Optional[np.ndarray] = None
+
+    try:
+        # 1) Optional camera stream.
+        if args.mode == "live" and args.auto_start_stream:
+            from paradex.io.camera_system.remote_camera_controller import remote_camera_controller
+            print(f"[stream] starting camera stream on {len(args.pc_list)} PCs @ {args.stream_fps} FPS...")
+            rcc = remote_camera_controller("track_interactive", pc_list=args.pc_list)
+            rcc.start("stream", False, fps=args.stream_fps)
+            if args.stream_warmup_s > 0:
+                time.sleep(args.stream_warmup_s)
+            print("[stream] started")
+
+        # 2) Init pose acquisition.
+        init_timing: Dict[str, Any]
+        if args.init_pose:
+            init_pose_world = np.load(Path(args.init_pose).expanduser())
+            if init_pose_world.shape != (4, 4):
+                sys.exit(f"--init-pose must be 4x4, got {init_pose_world.shape}")
+            print(f"[init] loaded init pose from {args.init_pose}")
+            init_timing = {"source": "file", "path": str(args.init_pose)}
+        else:
+            print("[init] running FoundPose init via init_orchestrator...")
+            orch = InitOrchestrator(
+                pc_list=args.pc_list, capture_ips=pc_ips,
+                port_mask=args.port_mask, port_pose=args.port_pose, port_cmd=args.port_cmd,
+            )
+            orch.init_object(
+                obj_name=args.obj,
+                mesh_path=str(mesh_path), assets_root=str(assets_root),
+                intrinsics_full=intrinsics_full, extrinsics_full=extrinsics_full,
+                image_hw=(H, W), mode=args.mode, pc_serials=pc_serials,
+            )
+            t0 = time.perf_counter()
+            init_pose_world, init_timing = orch.trigger_init(
+                prompt=args.prompt,
+                capture_dir=str(ep) if (args.mode == "disk" and ep is not None) else None,
+                save_capture_dir=str(trial_dir / "init_capture") if args.mode == "live" else None,
+                sil_iters=args.sil_iters, sil_lr=args.sil_lr, timeout_s=args.timeout_s,
+            )
+            if init_pose_world is None:
+                sys.exit(f"FoundPose init failed: {init_timing.get('reason')}")
+            print(f"[init] pose acquired in {time.perf_counter()-t0:.2f}s "
+                  f"(iou={init_timing.get('best_iou', 0):.3f}, "
+                  f"sil_loss={init_timing.get('sil_loss', 0):.4f})")
+            init_timing["source"] = "foundpose_init"
+        np.save(trial_dir / "init_pose_world.npy", init_pose_world)
+        with open(trial_dir / "init_timing.json", "w") as f:
+            json.dump(init_timing, f, indent=2, default=str)
+
+        # 3) Build viser scene (optional).
+        if not args.no_viser:
+            try:
+                server, obj_frame = _build_viser(mesh_path, extrinsics_full,
+                                                  init_pose_world, args.viser_port)
+                print(f"[viser] http://0.0.0.0:{args.viser_port}")
+            except Exception as exc:
+                print(f"[viser] failed to start ({exc}); continuing headless")
+                server, obj_frame = None, None
+
+        # 4) Init GoTrack daemons (port 6892).
+        intrinsics_payload = {
+            s: {
+                "K": intrinsics_full[s]["K_undist"].tolist(),
+                "width": int(intrinsics_full[s]["width"]),
+                "height": int(intrinsics_full[s]["height"]),
+            }
+            for s in intrinsics_full
+        }
+        extrinsics_payload = {
+            s: np.asarray(extrinsics_full[s], dtype=np.float64).reshape(4, 4).tolist()
+            for s in extrinsics_full
+        }
+        info_track = {
+            "mesh_path": _to_home_relative(mesh_path),
+            "anchor_bank_path": _to_home_relative(anchor_bank_path),
+            "object_id": 1,
+            "object_name": args.obj,
+            "intrinsics": intrinsics_payload,
+            "extrinsics": extrinsics_payload,
+            "mesh_scale": 1.0,
+            "unit_scale_mode": "auto",
+            "num_iters": 1,
+            "first_frame_num_iters": 5,
+        }
+        cmd_track = CommandSender(pc_list=args.pc_list, port=args.port_cmd_track)
+        print(f"[track] sending init to gotrack daemons on port {args.port_cmd_track}...")
+        cmd_track.send_command("init", wait=False, cmd_info=info_track)
+        time.sleep(0.5)  # let daemons begin loading the engine
+
+        # 5) Build robot-PC tracker.
+        tracker = GoTrackTracker(
+            capture_pc_ips=pc_ips,
+            port_obs=args.port_obs, port_prior=args.port_prior,
+            min_cams_per_frame=args.min_cams_per_frame,
+        )
+
+        # 6) Keyboard listener + control.
+        keyboard.start()
+        print("\n>>> Press 'c' to start tracking, 'q' to quit. <<<\n")
+        while not keyboard.start_event.is_set() and not keyboard.stop_event.is_set():
+            time.sleep(0.05)
+        if keyboard.stop_event.is_set():
+            print("[track] aborted before start")
+            return
+
+        # 7) Send "start" to gotrack daemons.
+        cmd_track.send_command("start", wait=False, cmd_info={})
+        print("[track] tracking started")
+
+        poses_dir = trial_dir / "poses"
+        poses_dir.mkdir(parents=True, exist_ok=True)
+
+        def _run():
+            n = 0
+            t_start = time.perf_counter()
+            try:
+                for fid, pose, info in tracker.track(init_pose_world):
+                    np.save(poses_dir / f"{int(fid):08d}.npy", pose)
+                    pose_log.append({
+                        "frame_id": int(fid),
+                        "wall_ts": time.time(),
+                        "n_inliers": int(info.get("n_inliers", 0)),
+                        "mean_residual_mm": float(info.get("mean_residual_mm", -1)),
+                        "pose": pose.tolist(),
+                    })
+                    if obj_frame is not None:
+                        try:
+                            _set_pose_handle(obj_frame, pose)
+                        except Exception:
+                            pass
+                    n += 1
+                    if n % 30 == 0:
+                        fps = n / max(time.perf_counter() - t_start, 1e-6)
+                        print(f"[track] frame {fid}  n={n}  fps={fps:.1f}  "
+                              f"inl={info.get('n_inliers', 0)}  "
+                              f"resid_mm={info.get('mean_residual_mm', -1):.2f}")
+                    if args.max_frames > 0 and n >= args.max_frames:
+                        print(f"[track] reached --max-frames {args.max_frames}")
+                        break
+                    if keyboard.stop_event.is_set():
+                        break
+            except Exception as exc:
+                logging.exception(f"[track] worker error: {exc}")
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+
+        # 8) Wait for 'q' or worker exit.
+        while worker.is_alive() and not keyboard.stop_event.is_set():
+            time.sleep(0.1)
+
+        # 9) Stop gracefully.
+        if tracker is not None:
+            tracker._stop.set()
+        worker.join(timeout=2.0)
+        try:
+            cmd_track.send_command("stop", wait=False, cmd_info={})
+        except Exception:
+            pass
+
+        # 10) Save log.
+        with open(trial_dir / "track_log.json", "w") as f:
+            json.dump({
+                "obj": args.obj,
+                "trial_ts": trial_ts,
+                "n_frames": len(pose_log),
+                "init_pose_world": init_pose_world.tolist(),
+                "frames": pose_log,
+            }, f, indent=2, default=str)
+        print(f"[track] saved {len(pose_log)} frames -> {trial_dir}")
+
+    finally:
+        if tracker is not None:
+            try:
+                tracker.close()
+            except Exception:
+                pass
+        # CmdTrack: close sockets only (do NOT broadcast 'exit' to keep daemons alive).
+        if cmd_track is not None:
+            try:
+                for s in cmd_track.sockets.values():
+                    s.close()
+            except Exception:
+                pass
+        if orch is not None:
+            try:
+                orch.close()
+            except Exception:
+                pass
+        if rcc is not None:
+            if args.stop_stream_on_exit:
+                try:
+                    print("[stream] stopping camera stream...")
+                    rcc.stop()
+                except Exception:
+                    pass
+            try:
+                rcc.end()
+            except Exception:
+                pass
+        keyboard.close()
+
+
+if __name__ == "__main__":
+    main()

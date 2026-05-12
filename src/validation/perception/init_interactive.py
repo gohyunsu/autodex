@@ -44,7 +44,7 @@ ASSETS_BASE = Path.home() / "shared_data/AutoDex/foundpose_assets"
 MESH_BASE = Path.home() / "shared_data/AutoDex/object/paradex"
 EXP_SRC = Path.home() / "shared_data/AutoDex/experiment/selected_100/allegro"
 EXP_OUT = Path.home() / "shared_data/AutoDex/experiment/object6d_test_foundpose"
-DEFAULT_PC_LIST = ["capture1", "capture2", "capture3", "capture4", "capture5", "capture6"]
+DEFAULT_PC_LIST = ["capture1", "capture2", "capture3", "capture5", "capture6"]  # capture4 out
 
 
 EXP_SRC_ALT = Path.home() / "shared_data/AutoDex/experiment/allegro/selected_100_prev"
@@ -121,15 +121,14 @@ def main():
     parser.add_argument("--sil-lr", type=float, default=0.002)
     parser.add_argument("--timeout-s", type=float, default=120.0)
     parser.add_argument("--out", type=str, default=str(EXP_OUT))
-    parser.add_argument("--auto-start-stream", action="store_true",
-                        help="(live only) Start camera stream via paradex remote_camera_controller "
-                             "before init.")
+    parser.add_argument("--no-auto-start-stream", dest="auto_start_stream",
+                        action="store_false",
+                        help="(live only) Skip starting camera stream — assume it's already running.")
+    parser.set_defaults(auto_start_stream=True)
     parser.add_argument("--stream-fps", type=int, default=10,
                         help="(live + auto-start-stream) Stream FPS.")
     parser.add_argument("--stream-warmup-s", type=float, default=2.0,
                         help="(live + auto-start-stream) Seconds to wait after starting stream.")
-    parser.add_argument("--stop-stream-on-exit", action="store_true",
-                        help="(live + auto-start-stream) Stop stream when this script exits.")
     args = parser.parse_args()
 
     from paradex.utils.system import get_pc_ip, get_camera_list
@@ -171,7 +170,10 @@ def main():
             calib = sorted(cam_root.iterdir())[-1]
         print(f"mode=live  obj={args.obj}  calib={calib.name}")
         intrinsics_full, extrinsics_full, H, W = _load_calib(calib)
-    print(f"calib: {len(intrinsics_full)} cams  {H}x{W}")
+    active_serials = {s for pc in args.pc_list for s in pc_serials[pc]}
+    intrinsics_full = {s: v for s, v in intrinsics_full.items() if s in active_serials}
+    extrinsics_full = {s: v for s, v in extrinsics_full.items() if s in active_serials}
+    print(f"calib: {len(intrinsics_full)} cams active ({len(args.pc_list)} PCs)  {H}x{W}")
 
     rcc = None
     if args.mode == "live" and args.auto_start_stream:
@@ -264,12 +266,11 @@ def main():
             print(f"\nsummary -> {out_root}/_summary.json")
     finally:
         if rcc is not None:
-            if args.stop_stream_on_exit:
-                try:
-                    print("[stream] stopping camera stream...")
-                    rcc.stop()
-                except Exception:
-                    pass
+            try:
+                print("[stream] stopping camera stream...")
+                rcc.stop()
+            except Exception:
+                pass
             try:
                 rcc.end()
             except Exception:

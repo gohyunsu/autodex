@@ -317,7 +317,7 @@ class GoTrackEngine:
             if dbg is not None:
                 per_camera_debug[cam] = dbg
 
-        external_unit_scale_to_meter = float(self._unit_info.external_unit_to_meter)
+        external_unit_scale_to_meter = float(self._unit_info.external_unit_scale_to_meter)
         per_view_anchor_data, _obs_by_anchor, _summary = _build_anchor_observations_for_frame(
             anchor_bank=self.anchor_bank,
             per_camera_records=per_camera_records,

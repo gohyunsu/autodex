@@ -325,10 +325,14 @@ class GoTrackTracker:
             records,
             mode="geometry",
         )
+        source_points_o = np.asarray([r["position_o"] for r in records], dtype=np.float32)
+        target_points_w = np.asarray([r["position_w"] for r in records], dtype=np.float32)
         fit = robust_fit_pose_from_anchors(
-            triangulation_records=records,
+            source_points_o,
+            target_points_w,
+            weights,
             inlier_threshold_mm=self.kabsch_inlier_thresh_mm,
-            weights=weights,
+            external_unit_scale_to_meter=self.external_unit_scale_to_meter,
         )
         pose_world = fit.get("pose_world")
         if pose_world is None:

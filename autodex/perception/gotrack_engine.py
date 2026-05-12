@@ -343,7 +343,7 @@ class GoTrackEngine:
                 if session_id is None:
                     self._diag_session = f"{int(time.time())}_{os.getpid()}"
                     session_id = self._diag_session
-                save_dir = f"{home}/shared_data/AutoDex/debug/gotrack_crops/{self.obj_name}/{session_id}/{int(frame_index):06d}"
+                save_dir = f"{home}/shared_data/AutoDex/debug/gotrack_crops/{self.object_name}/{session_id}/{int(frame_index):06d}"
                 os.makedirs(save_dir, exist_ok=True)
                 for s in self.serials:
                     dbg = per_camera_debug.get(s)

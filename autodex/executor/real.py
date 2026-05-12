@@ -14,6 +14,7 @@ Usage:
     executor.shutdown()
 """
 import datetime
+import os
 import time
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -382,54 +383,142 @@ class RealExecutor:
         xarm_handle.set_report_tau_or_i(1)
         xarm_handle.set_collision_sensitivity(0)
 
-        # Import mcc_minimal (sys.path-local).
+        # Import mcc_minimal (only tau model loading + input encoding).
         mcc_dir = str(Path.home() / "mcc_minimal")
         if mcc_dir not in sys.path:
             sys.path.insert(0, mcc_dir)
-        from fit_tau_model import load_model  # noqa: E402
-        from run_mcc_learned import run_joint  # noqa: E402
+        import torch  # noqa: E402
+        from fit_tau_model import load_model, build_input  # noqa: E402
 
         print(f"[place] loading mcc model: {mcc_model_path}")
         model = load_model(mcc_model_path)
 
-        class _MccAdapter:
-            """Pretends to be XArmAPI for mcc.run_joint, but routes set_servo_angle_j
-            writes through paradex's XArmController.action so paradex remains the
-            single writer (and continues logging)."""
-            def __init__(self, handle, ctrl):
-                self._h, self._c = handle, ctrl
-            # passthrough reads / no-op state changes (paradex already in mode 1)
-            def get_servo_angle(self, *a, **k): return self._h.get_servo_angle(*a, **k)
-            def get_joints_torque(self, *a, **k): return self._h.get_joints_torque(*a, **k)
-            def get_position(self, *a, **k): return self._h.get_position(*a, **k)
-            def set_mode(self, *a, **k): pass
-            def set_state(self, *a, **k): pass
-            @property
-            def _arm(self): return self._h._arm
-            def set_servo_angle_j(self, angles, is_radian=True):
-                q = np.asarray(angles, dtype=np.float64)
-                if not is_radian:
-                    q = np.deg2rad(q)
-                with self._c.lock:
-                    self._c.action = q
-                    self._c.is_servo = True
+        # Contact-stop loop: use the learned tau model only to estimate tau_ext;
+        # on contact (tau_ext > threshold), freeze q_des at current pose (paradex
+        # holds it) and break. No yield, no bounce.
+        DT = 0.01
+        LOOP_HZ = 100
+        FILTER_ALPHA = 0.1
+        QDOT_SMOOTH_ALPHA = 0.1
+        WARMUP_SEC = 1.0
+        # baseline noise per joint (Nm) — from mcc DEADBAND_J. Contact threshold
+        # is some multiplier above this.
+        DEADBAND_J = np.array([3.0, 3.0, 3.0, 1.0, 2.0, 0.5])
+        CONTACT_MULT = 3.0
+        CONTACT_THRESH = DEADBAND_J * CONTACT_MULT
 
-        mcc_arm = _MccAdapter(xarm_handle, xarm_ctrl)
+        def _read():
+            _, q_deg = xarm_handle.get_servo_angle()
+            q = np.deg2rad(np.asarray(q_deg[:6], dtype=np.float64))
+            # tau_motor from stream (paradex has report_type='real' on the XArmAPI)
+            KT_GEAR = 1.0  # mcc applies this internally; for raw stream both sides cancel in tau_ext
+            tau = np.asarray(xarm_handle._arm._joints_torque[:6], dtype=np.float64)
+            return q, tau
 
-        # q_des: lerp from start_q -> target_q over descend_time_s, then hold.
-        def q_des_fn(t):
+        def _push_action(q_cmd):
+            with xarm_ctrl.lock:
+                xarm_ctrl.action = q_cmd.astype(np.float64)
+                xarm_ctrl.is_servo = True
+
+        # Make sure tau reporting is on and start with paradex holding start_q.
+        _push_action(start_q)
+
+        # Warmup: prime tau_filt at hold pose.
+        tau_filt = np.zeros(6)
+        qdot_smooth = np.zeros(6)
+        q_last, t_last = None, None
+        t_warm0 = time.time()
+        while time.time() - t_warm0 < WARMUP_SEC:
+            q, tau_motor = _read()
+            t_now = time.time()
+            if q_last is not None and t_last is not None:
+                dt = max(t_now - t_last, 1e-4)
+                qdot = (q - q_last) / dt
+            else:
+                qdot = np.zeros(6)
+            q_last, t_last = q.copy(), t_now
+            qdot_smooth = QDOT_SMOOTH_ALPHA * qdot + (1 - QDOT_SMOOTH_ALPHA) * qdot_smooth
+            x = build_input(q[None, :], qdot_smooth[None, :],
+                            use_sincos=model.use_sincos,
+                            use_qdot=model.use_qdot,
+                            use_sign_qdot=getattr(model, "use_sign_qdot", False))[0].astype(np.float32)
+            with torch.no_grad():
+                tau_hat = model.predict_full(torch.from_numpy(x)).numpy()
+            tau_ext = tau_hat - tau_motor
+            tau_filt = FILTER_ALPHA * tau_ext + (1 - FILTER_ALPHA) * tau_filt
+            _push_action(start_q)
+            time.sleep(DT)
+        print(f"[place] warmup done. baseline tau_filt = {tau_filt.round(2)}")
+        print(f"[place] contact threshold per joint = {CONTACT_THRESH.round(2)}")
+
+        # Descend loop with contact stop.
+        log = [] if log_path else None
+        contact = False
+        contact_t = None
+        t0 = time.time()
+        next_t = t0
+        while time.time() - t0 < total_time_s:
+            now = time.time()
+            if now < next_t:
+                time.sleep(max(0.0, next_t - now))
+            next_t += DT
+            t = time.time() - t0
+
+            q, tau_motor = _read()
+            t_now = time.time()
+            dt = max(t_now - t_last, 1e-4)
+            qdot = (q - q_last) / dt
+            q_last, t_last = q.copy(), t_now
+            qdot_smooth = QDOT_SMOOTH_ALPHA * qdot + (1 - QDOT_SMOOTH_ALPHA) * qdot_smooth
+
+            x = build_input(q[None, :], qdot_smooth[None, :],
+                            use_sincos=model.use_sincos,
+                            use_qdot=model.use_qdot,
+                            use_sign_qdot=getattr(model, "use_sign_qdot", False))[0].astype(np.float32)
+            with torch.no_grad():
+                tau_hat = model.predict_full(torch.from_numpy(x)).numpy()
+            tau_ext = tau_hat - tau_motor
+            tau_filt = FILTER_ALPHA * tau_ext + (1 - FILTER_ALPHA) * tau_filt
+
+            # Check contact.
+            if not contact and np.any(np.abs(tau_filt) > CONTACT_THRESH):
+                contact = True
+                contact_t = t
+                worst = int(np.argmax(np.abs(tau_filt)))
+                print(f"[place] CONTACT detected at t={t:.2f}s — "
+                      f"joint {worst+1} tau_ext={tau_filt[worst]:.2f}Nm "
+                      f"(thresh {CONTACT_THRESH[worst]:.2f})")
+                # Freeze at current pose; break.
+                _push_action(q)
+                if log is not None:
+                    log.append((t, *q, *tau_filt, 1))
+                break
+
+            # Lerp q_des down toward target. After contact this wouldn't run.
             alpha = min(1.0, max(0.0, t / descend_time_s))
-            return (1 - alpha) * start_q + alpha * target_q
+            q_des = (1 - alpha) * start_q + alpha * target_q
+            _push_action(q_des)
 
-        print(f"[place] mcc admittance descend: {target_descend*1000:.0f}mm in {descend_time_s}s "
-              f"(total {total_time_s}s)")
-        run_joint(mcc_arm, model, "stream", start_q, total_time_s,
-                  np.ones(6, dtype=bool), q_des_fn=q_des_fn, no_admittance=False,
-                  log_path=log_path)
+            if log is not None:
+                log.append((t, *q, *tau_filt, 0))
+
+        if not contact:
+            print(f"[place] no contact within {total_time_s}s — reached target. final pose held.")
+
+        # Optional CSV log.
+        if log_path and log:
+            import csv as _csv
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, "w", newline="") as f:
+                w = _csv.writer(f)
+                w.writerow(["t"] + [f"q{i}" for i in range(6)] +
+                           [f"tau_ext{i}" for i in range(6)] + ["contact"])
+                w.writerows(log)
+            print(f"[place] log -> {log_path}")
 
         # Read final pose for descended-distance reporting.
         try:
-            _, final_pos_xarm = mcc_arm.get_position(is_radian=True)
+            _, final_pos_xarm = xarm_handle.get_position(is_radian=True)
         except Exception:
             final_pos_xarm = None
 

@@ -51,10 +51,15 @@ class CameraIntrinsics:
     height: int
 
 
-def _build_camera_model(intr: CameraIntrinsics):
-    """Wrap our intrinsics+extrinsics into the GoTrack PinholePlaneCameraModel."""
+def _build_camera_model(intr: CameraIntrinsics, translation_scale: float = 1.0):
+    """Wrap our intrinsics+extrinsics into the GoTrack PinholePlaneCameraModel.
+
+    translation_scale: applied to T_world_from_eye[:3, 3]. Must be 1.0 for the
+    plain ``camera_models`` slot and ``unit_info.translation_scale_to_gotrack``
+    for ``gotrack_camera_models`` (matches MV-GoTrack's video pipeline)."""
     from utils import structs
     T_world_from_eye = np.linalg.inv(np.asarray(intr.extrinsic_cw, dtype=np.float64))
+    T_world_from_eye[:3, 3] *= float(translation_scale)
     return structs.PinholePlaneCameraModel(
         width=int(intr.width), height=int(intr.height),
         f=(float(intr.K[0, 0]), float(intr.K[1, 1])),
@@ -207,9 +212,22 @@ class GoTrackEngine:
             translation_scale_to_gotrack=unit_info.translation_scale_to_gotrack,
         )
 
-        # GoTrack-side camera models (cached).
+        # Two camera-model dicts (matches MV-GoTrack video pipeline at
+        # archive/run_multiview_gotrack_anchor_online.py:1116-1128):
+        #   - camera_models:        translation_scale=1.0 (unscaled, used for
+        #                           crop selection / unscaled geometry)
+        #   - gotrack_camera_models: translation_scale=unit_info.translation_scale_to_gotrack
+        #                            (cam pos in same scale as anchor/mesh in
+        #                            gotrack frame — required for template
+        #                            renderer + flow sampling).
+        # Reusing one dict for both slots makes the template render empty.
+        self.camera_models: Dict[str, Any] = {
+            s: _build_camera_model(c, translation_scale=1.0)
+            for s, c in self.cameras.items()
+        }
         self.gotrack_camera_models: Dict[str, Any] = {
-            s: _build_camera_model(c) for s, c in self.cameras.items()
+            s: _build_camera_model(c, translation_scale=self._translation_scale)
+            for s, c in self.cameras.items()
         }
 
         # argparse-like namespace consumed by GoTrack helpers.
@@ -303,7 +321,7 @@ class GoTrackEngine:
 
         # extrinsics dict + camera_models dict in expected shapes.
         extrinsics_map = {s: self.cameras[s].extrinsic_cw for s in frame_batch}
-        camera_models = self.gotrack_camera_models
+        camera_models = self.camera_models
 
         device_state = DeviceState(
             device=self.device,
@@ -316,8 +334,8 @@ class GoTrackEngine:
         per_camera_records = _process_group_for_timestep_anchor(
             device_state=device_state,
             frame_batch=frame_batch,
-            camera_models=camera_models,
-            gotrack_camera_models=camera_models,
+            camera_models=self.camera_models,
+            gotrack_camera_models=self.gotrack_camera_models,
             extrinsics_map=extrinsics_map,
             init_pose_world=prior_pose_world,
             init_pose_source="prior",
@@ -333,17 +351,12 @@ class GoTrackEngine:
             if dbg is not None:
                 per_camera_debug[cam] = dbg
 
-        # === DIAG: save crop images to ~/shared_data/AutoDex/debug/gotrack_crops/{obj}/{session_pid}/{frame:06d}/{serial}_*.png ===
+        # === DIAG: save crop images to ~/shared_data/AutoDex/debug/gotrack_crops/{obj}/{frame:06d}/{serial}_*.png ===
         try:
             import os, cv2 as _cv2
             if self._frame_count < 5:
                 home = os.path.expanduser("~")
-                # session_pid groups all crops from this daemon's lifetime (resets on restart).
-                session_id = getattr(self, "_diag_session", None)
-                if session_id is None:
-                    self._diag_session = f"{int(time.time())}_{os.getpid()}"
-                    session_id = self._diag_session
-                save_dir = f"{home}/shared_data/AutoDex/debug/gotrack_crops/{self.object_name}/{session_id}/{int(frame_index):06d}"
+                save_dir = f"{home}/shared_data/AutoDex/debug/gotrack_crops/{self.object_name}/{int(frame_index):06d}"
                 os.makedirs(save_dir, exist_ok=True)
                 for s in self.serials:
                     dbg = per_camera_debug.get(s)

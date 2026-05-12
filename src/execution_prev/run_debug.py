@@ -28,7 +28,7 @@ from autodex.utils.robot_config import INIT_STATE, XARM_INIT, ALLEGRO_INIT
 from autodex.planner import GraspPlanner
 from autodex.planner.obstacles import add_obstacles
 from autodex.planner.visualizer import ScenePlanVisualizer
-from src.execution.daemon.perception_pipeline import PerceptionPipeline
+from src.execution_prev.daemon.perception_pipeline import PerceptionPipeline
 
 logging.basicConfig(level=logging.INFO, format='[%(name)s] %(message)s')
 
@@ -153,7 +153,7 @@ def main():
     parser.add_argument("--depth", type=str, default="da3", choices=["da3", "stereo"])
     parser.add_argument("--scene", type=str, default="table",
                         choices=["table", "wall", "shelf", "cluttered"])
-    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire"])
+    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire", "inspire_left"])
     args = parser.parse_args()
 
     obj_name = args.obj

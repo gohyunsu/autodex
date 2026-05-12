@@ -63,7 +63,7 @@ MESH_BASE = Path.home() / "shared_data/AutoDex/object/paradex"
 EXP_OUT = Path.home() / "shared_data/AutoDex/experiment/object6d_test_gotrack"
 EXP_SRC = Path.home() / "shared_data/AutoDex/experiment/selected_100/allegro"
 EXP_SRC_ALT = Path.home() / "shared_data/AutoDex/experiment/allegro/selected_100_prev"
-DEFAULT_PC_LIST = ["capture1", "capture2", "capture3", "capture4", "capture5", "capture6"]
+DEFAULT_PC_LIST = ["capture1", "capture2", "capture3", "capture5", "capture6"]  # capture4 out
 DEFAULT_ANCHOR_BANK_REL = "autodex/perception/thirdparty/MV-GoTrack/anchor_banks"
 GOTRACK_ROOT = REPO_ROOT / "autodex/perception/thirdparty/MV-GoTrack"
 
@@ -355,7 +355,10 @@ def main():
             calib = sorted(cam_root.iterdir())[-1]
         print(f"[track] mode=live  calib={calib.name}")
         intrinsics_full, extrinsics_full, H, W = _load_calib(calib)
-    print(f"[track] {len(intrinsics_full)} cams  {H}x{W}")
+    active_serials = {s for pc in args.pc_list for s in pc_serials[pc]}
+    intrinsics_full = {s: v for s, v in intrinsics_full.items() if s in active_serials}
+    extrinsics_full = {s: v for s, v in extrinsics_full.items() if s in active_serials}
+    print(f"[track] {len(intrinsics_full)} cams active ({len(args.pc_list)} PCs)  {H}x{W}")
 
     rcc = None
     orch: Optional[InitOrchestrator] = None

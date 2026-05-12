@@ -93,6 +93,7 @@ class GraspPlanner:
     HAND_CONFIGS = {
         "allegro": ("xarm_allegro.yml", "allegro_floating.yml", 0.01, 32, InterpolateType.CUBIC),
         "inspire": ("xarm_inspire.yml", "inspire_floating.yml", 0.002, 32, InterpolateType.LINEAR_CUDA),
+        "inspire_left": ("xarm_inspire_left.yml", "inspire_left_floating.yml", 0.002, 32, InterpolateType.LINEAR_CUDA),
     }
 
     def __init__(self, robot_cfg_path: Optional[str] = None, hand_cfg_path: Optional[str] = None,
@@ -115,7 +116,7 @@ class GraspPlanner:
         self._ik_solver: Optional[IKSolver] = None
 
         # Init state: same arm position for all hands, hand-specific finger init
-        if hand == "inspire":
+        if hand in ("inspire", "inspire_left"):
             self._init_state = np.concatenate([XARM_INIT, INSPIRE_INIT]).astype(np.float32)
             self._link6_to_wrist_rot = INSPIRE_LINK6_TO_WRIST[:3, :3]
         else:
@@ -241,7 +242,7 @@ class GraspPlanner:
 
         # Filter: backward + hand-table collision (no object mesh — hand should be near object)
         t0 = _time.time()
-        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand == "inspire" else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
+        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand in ("inspire", "inspire_left") else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
         collision = self._check_collision(world_cfg_no_target, wrist_se3, pregrasp)
         filtered = backward | collision
         valid = np.where(~filtered)[0]
@@ -449,7 +450,7 @@ class GraspPlanner:
 
         t0 = _time.time()
         collision = self._check_collision(world_cfg, wrist_se3, pregrasp)
-        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand == "inspire" else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
+        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand in ("inspire", "inspire_left") else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
         valid = np.where(~(collision | backward))[0]
         timing["collision_check_s"] = round(_time.time() - t0, 3)
 
@@ -568,7 +569,7 @@ class GraspPlanner:
         t0 = _time.time()
         N = len(wrist_se3)
         collision = self._check_collision(world_cfg, wrist_se3, pregrasp)
-        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand == "inspire" else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
+        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand in ("inspire", "inspire_left") else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
         filtered = collision | backward
         valid = np.where(~filtered)[0]
         print(f"[planner] collision check: {_time.time() - t0:.2f}s")
@@ -667,7 +668,7 @@ class GraspPlanner:
 
         # 3. Filter: backward + hand-table collision
         t0 = _time.time()
-        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand == "inspire" else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
+        backward = np.zeros(len(wrist_se3), dtype=bool) if self._hand in ("inspire", "inspire_left") else (wrist_se3[:, :3, :3] @ self._link6_y_in_wrist)[:, 2] < 0.3
         print(f"[backward] wrist x-axis z: {wrist_se3[:, 0, 2]}")
         collision = self._check_collision(world_cfg_no_target, wrist_se3, pregrasp)
         valid = np.where(~(backward | collision))[0]

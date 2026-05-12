@@ -84,6 +84,12 @@ HAND_CONFIG = {
         "convert": _convert_inspire,
         "xarm_init": XARM_INSPIRE_INIT,
     },
+    "inspire_left": {
+        "init": INSPIRE_INIT,
+        "link6_to_wrist": INSPIRE_LINK6_TO_WRIST,
+        "convert": _convert_inspire,
+        "xarm_init": XARM_INSPIRE_INIT,
+    },
 }
 
 

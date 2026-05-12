@@ -33,7 +33,7 @@ from autodex.planner import GraspPlanner
 from autodex.planner.obstacles import add_obstacles
 from autodex.planner.visualizer import ScenePlanVisualizer
 from autodex.executor.real import RealExecutor
-from src.execution.daemon.perception_pipeline import PerceptionPipeline
+from src.execution_prev.daemon.perception_pipeline import PerceptionPipeline
 
 logging.basicConfig(level=logging.INFO, format='[%(name)s] %(message)s')
 logging.getLogger("curobo").setLevel(logging.WARNING)
@@ -421,7 +421,7 @@ def main():
     parser.add_argument("--no_shelf_top", action="store_true", help="Remove shelf top panel")
     parser.add_argument("--success_only", action="store_true", help="Only use previously successful grasps")
     parser.add_argument("--viz", action="store_true", help="Launch scene visualizer after planning")
-    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire"])
+    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire", "inspire_left"])
     args = parser.parse_args()
     if args.exp_name is None:
         args.exp_name = args.grasp_version

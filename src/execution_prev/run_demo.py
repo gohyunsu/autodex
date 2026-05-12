@@ -26,8 +26,8 @@ from autodex.utils.path import project_dir, obj_path
 from autodex.planner import GraspPlanner
 from autodex.planner.visualizer import ScenePlanVisualizer
 from autodex.executor.real import RealExecutor
-from src.execution.daemon.perception_pipeline import PerceptionPipeline
-from src.execution.run_auto import (
+from src.execution_prev.daemon.perception_pipeline import PerceptionPipeline
+from src.execution_prev.run_auto import (
     SAM3_HOSTS, FPOSE_HOSTS,
     find_planning_mesh, pose_world_to_scene_cfg,
 )
@@ -102,7 +102,7 @@ def run_demo_trial(obj_name, hand, planner, pipeline, executor, rcc, viz=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire"])
+    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire", "inspire_left"])
     parser.add_argument("--viz", action="store_true")
     args = parser.parse_args()
 

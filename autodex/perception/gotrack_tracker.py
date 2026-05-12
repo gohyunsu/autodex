@@ -324,7 +324,6 @@ class GoTrackTracker:
         weights = build_fit_weights_from_triangulation_records(
             records,
             mode="geometry",
-            params={},
         )
         fit = robust_fit_pose_from_anchors(
             triangulation_records=records,

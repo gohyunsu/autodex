@@ -573,11 +573,18 @@ def main():
         while worker.is_alive() and not keyboard.stop_event.is_set():
             time.sleep(0.1)
 
+        # Diagnose exit reason.
+        if not worker.is_alive():
+            print(f"[track] main loop exit: worker died (n_frames={len(pose_log)})")
+        elif keyboard.stop_event.is_set():
+            print(f"[track] main loop exit: user pressed 'q'")
+
         # 9) Stop gracefully.
         if tracker is not None:
             tracker._stop.set()
         worker.join(timeout=2.0)
         try:
+            print(f"[track] sending stop to gotrack daemons...")
             cmd_track.send_command("stop", wait=False, cmd_info={})
         except Exception:
             pass

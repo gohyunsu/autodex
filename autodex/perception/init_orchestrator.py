@@ -180,7 +180,7 @@ class InitOrchestrator:
         intrinsics_full: Dict[str, Dict[str, Any]],
         extrinsics_full: Dict[str, np.ndarray],
         image_hw: Tuple[int, int],
-        mode: str = "live",
+        odmode: str = "live",
         pc_serials: Optional[Dict[str, List[str]]] = None,
     ) -> None:
         """Send init to all capture daemons + load mesh/sil optimizer here.

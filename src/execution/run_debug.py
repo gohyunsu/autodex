@@ -243,12 +243,21 @@ def main():
                 json.dump(timing, f, indent=2, default=str)
             return
 
-        # ── 4. GUI execute ───────────────────────────────────────────────────
-        print(f"[4/4] Launching GUI executor...")
+        # ── 4. Execute ───────────────────────────────────────────────────────
+        print(f"[4/4] Executing...")
         timing["execution_start"] = _ts()
         executor = RealExecutor(hand_name=args.hand)
-        s_hand = executor.execute(result)
+        s_hand = executor.execute(result)         # grasp + lift (object held up)
+
+        # ↓ Label image capture goes here — object lifted, table area exposed.
+        # (auto-label via charuco visibility is a follow-up; for now, manual label.)
+
+        place_info = executor.place(
+            result,
+            log_path=os.path.join(img_dir, "place_mcc_log.csv"),
+        )
         timing["execution_states"] = executor.state_timestamps
+        timing["place"] = place_info
 
         # Label.
         while True:

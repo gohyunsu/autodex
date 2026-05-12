@@ -167,11 +167,12 @@ class RealExecutor:
 
     def _move_cartesian(self, target_pose, threshold_t=0.002, threshold_r=0.02,
                         vel_scale=1.0, stop_on_stall=False,
-                        stall_window=30, stall_min_progress=0.001):
-        """Stall detection is window-based: over the last `stall_window` ticks
-        we must have advanced at least `stall_min_progress` meters (default 1 mm)
-        otherwise we count as stalled. This is robust to xarm position-reading
-        latency/noise on slow descents.
+                        stall_window=30, stall_progress_ratio=0.3):
+        """Stall detection is window-based + ratio to commanded velocity:
+        over the last `stall_window` ticks the arm should advance roughly
+        (cart_vel_limit * vel_scale * stall_window) meters in free motion.
+        If actual progress < `stall_progress_ratio` of that expected, we count
+        as stalled — robust to both reading latency and xarm yielding on contact.
 
         stop_on_stall=True breaks immediately on stall (placing mode — stop on
         contact, don't clear_error or retry).
@@ -180,6 +181,8 @@ class RealExecutor:
 
         target_rot = Rotation.from_matrix(target_pose[:3, :3])
         pos_history = deque(maxlen=stall_window)
+        expected_progress = self.cart_vel_limit * vel_scale * stall_window
+        stall_thresh = expected_progress * stall_progress_ratio
         stalled = False
         recovered = False
         recover_count = 0
@@ -187,10 +190,10 @@ class RealExecutor:
             cur = self.arm.get_data()["position"].copy()
             cur_pos = cur[:3, 3].copy()
             pos_history.append(cur_pos)
-            # Stall = full window collected and total displacement is small.
+            # Stall = full window collected and progress < expected*ratio.
             if len(pos_history) == stall_window:
                 progress = np.linalg.norm(pos_history[-1] - pos_history[0])
-                stalled = (progress < stall_min_progress)
+                stalled = (progress < stall_thresh)
             if stalled:
                 if stop_on_stall:
                     print(f"[executor] stall detected (window {stall_window} ticks, "
@@ -277,6 +280,10 @@ class RealExecutor:
         Execute: init -> approach -> pregrasp -> grasp -> squeeze -> lift.
         State timestamps stored in self.state_timestamps.
         Returns the squeezed hand pose.
+
+        Place (descend) is now a separate `place(plan_result, ...)` call so
+        callers can do work (e.g. capture label image) while the object is
+        held up.
         """
         if not plan_result.success:
             print("Planning failed — nothing to execute.")
@@ -288,10 +295,6 @@ class RealExecutor:
         g_hand = self._convert(plan_result.grasp_pose)
         wrist_ee = plan_result.wrist_se3 @ np.linalg.inv(self._link6_to_wrist)
 
-        return self._execute_auto(traj, pg_hand, g_hand, wrist_ee, lift_height)
-
-    def _execute_auto(self, traj, pg_hand, g_hand, wrist_ee, lift_height):
-        """Reference: run_auto_v2.py lines 318-335"""
         sl = self.squeeze_level
 
         # 1. Return to init pose (joint 0 first)
@@ -324,27 +327,128 @@ class RealExecutor:
         lift_pose[2, 3] += lift_height
         self._move_cartesian(lift_pose, vel_scale=1/1.5)
 
-        # 7. Place (descend back down slowly, stop on contact).
-        # Target = 5cm BELOW original grasp height — pushes into ground so that
-        # perception/c2r slack still lets the object meet the table. Relies on
-        # stop_on_stall to halt safely once contact is felt.
-        self._log_state("place")
-        place_overshoot = 0.05
-        target_descend = lift_height + place_overshoot
-        start_z = self.arm.get_data()["position"][2, 3]
-        place_pose = self.arm.get_data()["position"].copy()
-        place_pose[2, 3] -= target_descend
-        self._move_cartesian(place_pose, vel_scale=1/3.0, stop_on_stall=True)
-        descended = start_z - self.arm.get_data()["position"][2, 3]
-        if descended < target_descend - 0.005:
-            print(f"[executor] place: stopped on contact — descended {descended*1000:.1f}mm "
-                  f"of target {target_descend*1000:.0f}mm")
-        else:
-            print(f"[executor] place: full descent (no contact!) — {descended*1000:.1f}mm "
-                  f"(target {target_descend*1000:.0f}mm)")
-
-        self._log_state("done")
+        self._log_state("lift_done")
         return s_hand
+
+    def place(self, plan_result: PlanResult, lift_height: float = 0.10,
+              overshoot: float = 0.05,
+              mcc_model_path: str = None,
+              descend_time_s: float = 8.0,
+              total_time_s: float = 12.0,
+              log_path: str = None) -> dict:
+        """Descend with mcc_minimal admittance control. Target = lift_height +
+        overshoot below current z; arm yields naturally on table/object contact
+        via learned tau-model admittance loop.
+
+        Hands the arm off from paradex's XArmController to a fresh XArmAPI for
+        the mcc loop, then re-inits paradex after."""
+        import sys
+        from pathlib import Path
+
+        if not plan_result.success:
+            return {"descended": 0.0, "stopped_on_contact": False, "target": 0.0}
+
+        if mcc_model_path is None:
+            mcc_model_path = str(Path.home() / "mcc_minimal" / "results"
+                                 / "tau_model_inspire_left.pt")
+
+        from paradex.io.robot_controller.xarm_controller import homo2cart
+
+        self._log_state("place")
+        target_descend = lift_height + overshoot
+        start_q = self.arm.get_data()["qpos"][:6].copy().astype(np.float64)
+        current_pos = self.arm.get_data()["position"].copy()
+
+        # Compute target cart + IK via xarm SDK before disconnecting.
+        target_pos = current_pos.copy()
+        target_pos[2, 3] -= target_descend
+        target_cart = homo2cart(target_pos)  # [x_mm, y_mm, z_mm, r_rad, p_rad, y_rad]
+        code, target_q_deg = self.arm.arm.get_inverse_kinematics(
+            target_cart.tolist(), input_is_radian=True, return_is_radian=False)
+        if code != 0:
+            print(f"[place] IK failed for descent target (code={code}). aborting place.")
+            self._log_state("place_done")
+            return {"descended": 0.0, "stopped_on_contact": False, "target": target_descend,
+                    "reason": "ik_failed"}
+        target_q = np.deg2rad(np.asarray(target_q_deg[:6], dtype=np.float64))
+
+        # Adapter: paradex's control thread keeps running (so its recording
+        # continues), but mcc's writes are redirected to xarm_ctrl.action and
+        # paradex sends them. Reads delegate to the raw XArmAPI handle.
+        xarm_ctrl = self.arm
+        xarm_handle = xarm_ctrl.arm   # raw XArmAPI
+
+        # mcc-needed handle setup (one-shot, harmless to paradex).
+        xarm_handle.set_report_tau_or_i(1)
+        xarm_handle.set_collision_sensitivity(0)
+
+        # Import mcc_minimal (sys.path-local).
+        mcc_dir = str(Path.home() / "mcc_minimal")
+        if mcc_dir not in sys.path:
+            sys.path.insert(0, mcc_dir)
+        from fit_tau_model import load_model  # noqa: E402
+        from run_mcc_learned import run_joint  # noqa: E402
+
+        print(f"[place] loading mcc model: {mcc_model_path}")
+        model = load_model(mcc_model_path)
+
+        class _MccAdapter:
+            """Pretends to be XArmAPI for mcc.run_joint, but routes set_servo_angle_j
+            writes through paradex's XArmController.action so paradex remains the
+            single writer (and continues logging)."""
+            def __init__(self, handle, ctrl):
+                self._h, self._c = handle, ctrl
+            # passthrough reads / no-op state changes (paradex already in mode 1)
+            def get_servo_angle(self, *a, **k): return self._h.get_servo_angle(*a, **k)
+            def get_joints_torque(self, *a, **k): return self._h.get_joints_torque(*a, **k)
+            def get_position(self, *a, **k): return self._h.get_position(*a, **k)
+            def set_mode(self, *a, **k): pass
+            def set_state(self, *a, **k): pass
+            @property
+            def _arm(self): return self._h._arm
+            def set_servo_angle_j(self, angles, is_radian=True):
+                q = np.asarray(angles, dtype=np.float64)
+                if not is_radian:
+                    q = np.deg2rad(q)
+                with self._c.lock:
+                    self._c.action = q
+                    self._c.is_servo = True
+
+        mcc_arm = _MccAdapter(xarm_handle, xarm_ctrl)
+
+        # q_des: lerp from start_q -> target_q over descend_time_s, then hold.
+        def q_des_fn(t):
+            alpha = min(1.0, max(0.0, t / descend_time_s))
+            return (1 - alpha) * start_q + alpha * target_q
+
+        print(f"[place] mcc admittance descend: {target_descend*1000:.0f}mm in {descend_time_s}s "
+              f"(total {total_time_s}s)")
+        run_joint(mcc_arm, model, "stream", start_q, total_time_s,
+                  np.ones(6, dtype=bool), q_des_fn=q_des_fn, no_admittance=False,
+                  log_path=log_path)
+
+        # Read final pose for descended-distance reporting.
+        try:
+            _, final_pos_xarm = mcc_arm.get_position(is_radian=True)
+        except Exception:
+            final_pos_xarm = None
+
+        # Compute descended distance from final pose.
+        if final_pos_xarm is not None:
+            final_z = final_pos_xarm[2] / 1000.0  # mm -> m
+            descended = current_pos[2, 3] - final_z
+        else:
+            descended = float("nan")
+        stopped = descended < target_descend - 0.005 if descended == descended else False
+        print(f"[place] descended {descended*1000:.1f}mm of target {target_descend*1000:.0f}mm "
+              f"({'yielded on contact' if stopped else 'reached target'})")
+
+        # paradex thread never stopped; it's been forwarding mcc's q_ref the
+        # whole time, so no re-init needed. Just leave its action at last q_ref.
+
+        self._log_state("place_done")
+        return {"descended": float(descended), "stopped_on_contact": bool(stopped),
+                "target": float(target_descend)}
 
     def release(self, plan_result: PlanResult):
         """Release object and return arm to init pose."""

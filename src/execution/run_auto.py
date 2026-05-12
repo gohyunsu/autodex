@@ -228,9 +228,12 @@ def run_single_trial(
     sync_generator.start(fps=30)
 
     t0 = time.time()
-    s_hand = executor.execute(result)
+    s_hand = executor.execute(result)              # grasp + lift
+    # (object is held up here — good moment to snapshot for charuco check)
+    place_info = executor.place(result)            # descend with stop_on_stall
     timing["execute_s"] = round(time.time() - t0, 2)
     timing["execution_states"] = executor.state_timestamps
+    timing["place"] = place_info
 
     rcc.stop()
     timestamp_monitor.stop()

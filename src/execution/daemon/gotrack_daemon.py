@@ -295,6 +295,7 @@ class GoTrackDaemon:
                     frames_bgr=frames_bgr,
                     masks=None,
                     frame_index=int(min_frame_id),
+                    include_debug_images=True,
                 )
             except Exception as exc:
                 logger.exception(f"[loop] engine error: {exc}")

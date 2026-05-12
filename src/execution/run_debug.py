@@ -222,6 +222,14 @@ def main():
         # ── 3. Viser preview ─────────────────────────────────────────────────
         print(f"[3/4] Viser preview (http://localhost:{args.port_viser})...")
         vis = ScenePlanVisualizer(scene_cfg, result, port=args.port_viser, hand=args.hand)
+        # Also overlay all candidates (red = filtered, green = valid) so we can
+        # scrub through them with the "Candidate #" slider.
+        cand_wrist, _, cand_grasp, cand_filtered = planner.get_candidates(
+            scene_cfg, args.obj, args.grasp_version,
+            success_only=args.success_only,
+            skip_done=(args.scene == "table"), hand=args.hand,
+        )
+        vis.add_candidates(cand_wrist, cand_grasp, cand_filtered)
         vis.start_viewer(use_thread=True)
         chime.info()
 

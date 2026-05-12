@@ -24,8 +24,11 @@ case "$ACTION" in
         done
         wait
         sleep 2
+        # XFORMERS_DISABLED=1 forces PyTorch native attention. xformers fails on
+        # Blackwell/RTX50 (compute capability 12.0) at fp32 since fa2/fa3/cutlass
+        # only support older GPUs.
         for pc in "${PCS[@]}"; do
-            ssh -o ConnectTimeout=3 "$pc" "bash -c 'nohup $PY $DAEMON --robot-ip $ROBOT_IP > $LOG 2>&1 &'"
+            ssh -o ConnectTimeout=3 "$pc" "bash -c 'XFORMERS_DISABLED=1 nohup $PY $DAEMON --robot-ip $ROBOT_IP > $LOG 2>&1 &'"
         done
         sleep 3
         for pc in "${PCS[@]}"; do

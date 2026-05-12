@@ -24,10 +24,9 @@ robot_cfg:
             "left_ring_1", "left_ring_2",
             "left_little_1", "left_little_2"
         ]
-        # Assume hand joints locked open (same convention as xarm_inspire.yml)
 
         collision_link_names: [
-          "link1", "link2", "link3", "link4", "link5", "link6",
+          "link_base", "link1", "link2", "link3", "link4", "link5", "link6",
           "base_link",
           "left_thumb_2", "left_thumb_3", "left_thumb_4",
           "left_index_1", "left_index_2",

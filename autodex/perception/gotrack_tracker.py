@@ -295,7 +295,22 @@ class GoTrackTracker:
                 })
 
         if not observations_by_anchor:
+            n_payloads = len(payloads)
+            sel_sums = {s: int(np.asarray(p.get("selected_mask")).sum())
+                        if p.get("selected_mask") is not None else -1
+                        for s, p in payloads.items()}
+            logger.warning(f"[fuse] no_observations: n_payloads={n_payloads} "
+                           f"selected_mask_sums={sel_sums}")
             return None, {"reason": "no_observations"}
+
+        # Diagnostic: how many anchors are seen by multiple cameras?
+        n_anchors = len(observations_by_anchor)
+        view_counts = [len(v) for v in observations_by_anchor.values()]
+        n_multi = sum(1 for c in view_counts if c >= 2)
+        if n_multi == 0:
+            logger.warning(f"[fuse] no anchors seen by ≥2 cams: "
+                           f"n_anchors={n_anchors} max_views_per_anchor={max(view_counts)} "
+                           f"n_payloads={len(payloads)}")
 
         tri = triangulate_anchor_observations(
             observations_by_anchor=observations_by_anchor,

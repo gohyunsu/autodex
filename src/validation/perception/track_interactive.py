@@ -425,7 +425,7 @@ def main():
                 obj_name=args.obj,
                 mesh_path=str(mesh_path), assets_root=str(assets_root),
                 intrinsics_full=intrinsics_full, extrinsics_full=extrinsics_full,
-                image_hw=(H, W), omode=args.mode, pc_serials=pc_serials,
+                image_hw=(H, W), mode=args.mode, pc_serials=pc_serials,
             )
             t0 = time.perf_counter()
             init_pose_world, init_timing = orch.trigger_init(

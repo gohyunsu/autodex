@@ -202,6 +202,14 @@ class GoTrackEngine:
             unit_scale_infos={self.object_id: unit_info},
             backend="nvdiffrast",
         )
+        # setup_renderer leaves model.gotrack_translation_scale unset, but
+        # _process_group_for_timestep_anchor reads it via getattr(..., 1.0)
+        # to scale init_pose_camera. If left at 1.0 while we scale the camera
+        # T_world_from_eye to GoTrack's mm-unit (below), pose stays in meters
+        # → unit mismatch inside scene_observation → crop_camera scale differs
+        # wildly per cam. Mirror what model_loader.configure_renderer does.
+        self.model.gotrack_translation_scale = float(self._translation_scale)
+        self.renderer.gotrack_translation_scale = float(self._translation_scale)
 
         # Anchor bank — canonical FPS anchors on mesh (mesh frame, mm or meters
         # depending on mesh). prepare_anchor_bank_for_gotrack normalises into

@@ -332,6 +332,36 @@ class GoTrackEngine:
             if dbg is not None:
                 per_camera_debug[cam] = dbg
 
+        # === DIAG: save crop images to /tmp/gotrack_crops/{frame_idx:06d}/{serial}_{kind}.png ===
+        try:
+            import os, cv2 as _cv2
+            if self._frame_count < 5:
+                save_dir = f"/tmp/gotrack_crops/{int(frame_index):06d}"
+                os.makedirs(save_dir, exist_ok=True)
+                for s in self.serials:
+                    dbg = per_camera_debug.get(s)
+                    if dbg is None:
+                        continue
+                    q = dbg.get("query_rgb_crop")
+                    t = dbg.get("template_rgb_crop")
+                    if q is not None:
+                        q_arr = np.asarray(q)
+                        if q_arr.dtype != np.uint8:
+                            q_arr = np.clip(q_arr * 255 if q_arr.max() <= 1.0 else q_arr, 0, 255).astype(np.uint8)
+                        if q_arr.ndim == 3 and q_arr.shape[2] == 3:
+                            q_arr = _cv2.cvtColor(q_arr, _cv2.COLOR_RGB2BGR)
+                        _cv2.imwrite(f"{save_dir}/{s}_query.png", q_arr)
+                    if t is not None:
+                        t_arr = np.asarray(t)
+                        if t_arr.dtype != np.uint8:
+                            t_arr = np.clip(t_arr * 255 if t_arr.max() <= 1.0 else t_arr, 0, 255).astype(np.uint8)
+                        if t_arr.ndim == 3 and t_arr.shape[2] == 3:
+                            t_arr = _cv2.cvtColor(t_arr, _cv2.COLOR_RGB2BGR)
+                        _cv2.imwrite(f"{save_dir}/{s}_template.png", t_arr)
+                logger.info(f"[diag-crops] saved to {save_dir}")
+        except Exception as exc:
+            logger.warning(f"[diag-crops] save failed: {exc}")
+
         # === DIAG: per-cam debug state right after batch refinement ===
         diag_records: Dict[str, str] = {}
         for s in self.serials:

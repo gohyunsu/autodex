@@ -326,14 +326,17 @@ class RealExecutor:
 
         # 7. Place (descend back down slowly, stop on contact)
         self._log_state("place")
-        start_pose = self.arm.get_data()["position"].copy()
-        place_pose = start_pose.copy()
+        start_z = self.arm.get_data()["position"][2, 3]
+        place_pose = self.arm.get_data()["position"].copy()
         place_pose[2, 3] -= lift_height
         self._move_cartesian(place_pose, vel_scale=1/3.0, stop_on_stall=True)
-        final_z = self.arm.get_data()["position"][2, 3]
-        print(f"[executor] place: descended {(start_pose[2,3] - final_z)*1000:.1f}mm "
-              f"(target {lift_height*1000:.0f}mm, final link6 z={final_z:.4f}, "
-              f"original grasp z={wrist_ee[2,3]:.4f})")
+        descended = start_z - self.arm.get_data()["position"][2, 3]
+        if descended < lift_height - 0.005:
+            print(f"[executor] place: stopped early — descended {descended*1000:.1f}mm "
+                  f"of target {lift_height*1000:.0f}mm (contact detected)")
+        else:
+            print(f"[executor] place: full descent — {descended*1000:.1f}mm "
+                  f"(no contact)")
 
         self._log_state("done")
         return s_hand

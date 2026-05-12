@@ -227,11 +227,23 @@ def _set_pose_handle(handle, T: np.ndarray) -> None:
 
 def _build_viser(mesh_path: Path,
                  extrinsics_full: Dict[str, np.ndarray],
-                 init_pose_world: np.ndarray,
-                 port: int):
+                 init_pose_robot: np.ndarray,
+                 port: int,
+                 c2r: Optional[np.ndarray] = None):
+    """viser scene rendered in robot base frame.
+
+    extrinsics_full entries are world->cam (charuco frame). ``c2r`` = world->robot
+    representation of the robot origin (i.e. robot expressed in charuco). The
+    point-frame transform is ``p_robot = inv(c2r) @ p_world``.
+    """
     import viser
     import trimesh
     from scipy.spatial.transform import Rotation
+
+    if c2r is None:
+        r2c = np.eye(4)
+    else:
+        r2c = np.linalg.inv(np.asarray(c2r, dtype=np.float64).reshape(4, 4))
 
     server = viser.ViserServer(port=port)
     server.scene.add_frame("/world", show_axes=True, axes_length=0.1, axes_radius=0.003)
@@ -245,14 +257,15 @@ def _build_viser(mesh_path: Path,
         faces=np.asarray(obj_tm.faces, dtype=np.uint32),
         color=(220, 100, 80), opacity=0.85,
     )
-    _set_pose_handle(obj_frame, init_pose_world)
+    _set_pose_handle(obj_frame, init_pose_robot)
 
     for s, T_wc in extrinsics_full.items():
-        T_cw = np.linalg.inv(T_wc)  # cam-in-world
-        q_xyzw = Rotation.from_matrix(T_cw[:3, :3]).as_quat()
+        T_cw = np.linalg.inv(T_wc)        # cam-in-world (charuco)
+        T_cr = r2c @ T_cw                 # cam-in-robot
+        q_xyzw = Rotation.from_matrix(T_cr[:3, :3]).as_quat()
         server.scene.add_frame(
             f"/cam/{s}",
-            position=tuple(T_cw[:3, 3].astype(float)),
+            position=tuple(T_cr[:3, 3].astype(float)),
             wxyz=(float(q_xyzw[3]), float(q_xyzw[0]),
                   float(q_xyzw[1]), float(q_xyzw[2])),
             show_axes=True, axes_length=0.03, axes_radius=0.0015,
@@ -414,15 +427,24 @@ def main():
                   f"(iou={init_timing.get('best_iou', 0):.3f}, "
                   f"sil_loss={init_timing.get('sil_loss', 0):.4f})")
             init_timing["source"] = "foundpose_init"
+
+        # Save C2R (world/charuco -> robot base) into trial dir + convert init pose.
+        from paradex.calibration.utils import save_current_C2R, load_c2r
+        save_current_C2R(str(trial_dir))
+        c2r = load_c2r(str(trial_dir))
+        r2c = np.linalg.inv(c2r)
+        init_pose_robot = r2c @ init_pose_world
         np.save(trial_dir / "init_pose_world.npy", init_pose_world)
+        np.save(trial_dir / "init_pose_robot.npy", init_pose_robot)
+        np.save(trial_dir / "C2R.npy", c2r)
         with open(trial_dir / "init_timing.json", "w") as f:
             json.dump(init_timing, f, indent=2, default=str)
 
-        # 3) Build viser scene (optional).
+        # 3) Build viser scene in ROBOT base frame (optional).
         if not args.no_viser:
             try:
                 server, obj_frame = _build_viser(mesh_path, extrinsics_full,
-                                                  init_pose_world, args.viser_port)
+                                                  init_pose_robot, args.viser_port, c2r=c2r)
                 print(f"[viser] http://0.0.0.0:{args.viser_port}")
             except Exception as exc:
                 print(f"[viser] failed to start ({exc}); continuing headless")
@@ -484,19 +506,35 @@ def main():
         def _run():
             n = 0
             t_start = time.perf_counter()
+            print(f"[track-worker] entered _run, calling tracker.track(...)")
+            # Background watchdog: every 2s report buffer / per-PC obs counts.
+            def _watchdog():
+                while not keyboard.stop_event.is_set():
+                    time.sleep(2.0)
+                    with tracker._status_lock:
+                        per_pc = dict(tracker.status.get("per_pc_last_frame", {}))
+                    n_inflight = len(tracker.sync_buffer._buf)
+                    print(f"[track-worker:watchdog] n_yielded={n} "
+                          f"sync_buffer_inflight={n_inflight} "
+                          f"per_pc_last_fid={ {ip: v.get('frame_id') for ip, v in per_pc.items()} }")
+            threading.Thread(target=_watchdog, daemon=True).start()
             try:
                 for fid, pose, info in tracker.track(init_pose_world):
-                    np.save(poses_dir / f"{int(fid):08d}.npy", pose)
+                    if n == 0:
+                        print(f"[track-worker] first yield: fid={fid}")
+                    pose_robot = r2c @ pose
+                    np.save(poses_dir / f"{int(fid):08d}.npy", pose_robot)
                     pose_log.append({
                         "frame_id": int(fid),
                         "wall_ts": time.time(),
                         "n_inliers": int(info.get("n_inliers", 0)),
                         "mean_residual_mm": float(info.get("mean_residual_mm", -1)),
-                        "pose": pose.tolist(),
+                        "pose_robot": pose_robot.tolist(),
+                        "pose_world": pose.tolist(),
                     })
                     if obj_frame is not None:
                         try:
-                            _set_pose_handle(obj_frame, pose)
+                            _set_pose_handle(obj_frame, pose_robot)
                         except Exception:
                             pass
                     n += 1
@@ -511,7 +549,9 @@ def main():
                     if keyboard.stop_event.is_set():
                         break
             except Exception as exc:
-                logging.exception(f"[track] worker error: {exc}")
+                print(f"[track-worker] EXCEPTION: {type(exc).__name__}: {exc}")
+                import traceback; traceback.print_exc()
+            print(f"[track-worker] _run exiting, n_frames={n}")
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()

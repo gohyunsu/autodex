@@ -25,8 +25,8 @@ HAND_URDF = {
         os.path.join(_ASSET_ROOT, "inspire_description", "inspire_hand_right.urdf"),
     ),
     "inspire_left": (
-        os.path.join(os.path.expanduser("~"), "mcc_minimal", "configs", "xarm_inspire_left", "xarm_inspire_left.urdf"),
-        os.path.join(os.path.expanduser("~"), "mcc_minimal", "configs", "xarm_inspire_left", "xarm_inspire_left.urdf"),
+        os.path.join(_ASSET_ROOT, "inspire_left_description", "xarm_inspire_left.urdf"),
+        os.path.join(_ASSET_ROOT, "inspire_left_description", "xarm_inspire_left.urdf"),
     ),
 }
 

@@ -207,8 +207,20 @@ class GoTrackDaemon:
         my_serials = list(self.engine.cameras.keys())
         last_frame_ids = {s: 0 for s in my_serials}
         last_published_frame_id: Optional[int] = None
+        n_published = 0
+        n_skipped_frames = 0
+        n_skipped_no_prior = 0
+        last_log_t = time.perf_counter()
 
         while not self.stop_event.is_set() and not self.exit_event.is_set():
+            now = time.perf_counter()
+            if now - last_log_t > 2.0:
+                logger.info(f"[loop] published={n_published}  "
+                            f"skipped_frames={n_skipped_frames}  "
+                            f"skipped_no_prior={n_skipped_no_prior}  "
+                            f"last_fid={last_frame_ids}")
+                last_log_t = now
+
             # 1. Pull latest frames from SHM.
             images_data = self.reader.get_images(copy=True)
             frames_bgr: Dict[str, np.ndarray] = {}
@@ -223,6 +235,7 @@ class GoTrackDaemon:
 
             # Need all cams synced; if any cam missing this iteration, wait.
             if len(frames_bgr) != len(my_serials):
+                n_skipped_frames += 1
                 time.sleep(0.005)
                 continue
             if min_frame_id == last_published_frame_id:
@@ -232,6 +245,7 @@ class GoTrackDaemon:
             #    init pose).
             prior = self.prior_sub.get_latest()
             if "pose_world" not in prior:
+                n_skipped_no_prior += 1
                 time.sleep(0.01)
                 continue
             prior_pose = np.asarray(prior["pose_world"], dtype=np.float64).reshape(4, 4)
@@ -278,6 +292,7 @@ class GoTrackDaemon:
             if meta_items:
                 self.publisher.send_data(meta_items, binaries)
                 last_published_frame_id = min_frame_id
+                n_published += 1
 
     def run(self) -> None:
         logger.info("[daemon] waiting for /init from robot PC")

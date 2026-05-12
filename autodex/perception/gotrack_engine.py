@@ -64,6 +64,7 @@ def _build_camera_model(intr: CameraIntrinsics):
 
 def _build_args_namespace(
     *,
+    object_id: int = 1,
     mask_free: bool = True,
     skip_pnp: bool = True,
     confidence_threshold: float = 0.25,
@@ -75,6 +76,7 @@ def _build_args_namespace(
 ) -> argparse.Namespace:
     """Build a minimal argparse-style namespace consumed by GoTrack helpers."""
     return argparse.Namespace(
+        object_id=object_id,
         mask_free=mask_free,
         skip_pnp=skip_pnp,
         confidence_threshold=confidence_threshold,
@@ -86,6 +88,12 @@ def _build_args_namespace(
         # Optimized input pipeline knobs (off; we batch per-frame on this PC).
         optimized_input_pipeline=False,
         optimized_input_pipeline_v2=False,
+        optim_crop_update_interval=0,
+        optim_template_update_interval=1,
+        optim_template_render_workers=1,
+        optim_v2_crop_camera_workers=1,
+        optim_v2_warp_grid_workers=1,
+        template_renderer_backend="nvdiffrast",
     )
 
 
@@ -134,8 +142,8 @@ class GoTrackEngine:
         if device.startswith("cuda"):
             torch.cuda.set_device(self.device)
 
-        self.mesh_path = str(Path(mesh_path).resolve())
-        self.anchor_bank_path = str(Path(anchor_bank_path).resolve())
+        self.mesh_path = str(Path(mesh_path).expanduser().resolve())
+        self.anchor_bank_path = str(Path(anchor_bank_path).expanduser().resolve())
         self.object_id = int(object_id)
         self.object_name = object_name
 
@@ -195,7 +203,7 @@ class GoTrackEngine:
         raw_bank = load_anchor_bank(self.anchor_bank_path)
         self.anchor_bank = prepare_anchor_bank_for_gotrack(
             raw_bank,
-            unit_scale_info=unit_info,
+            translation_scale_to_gotrack=unit_info.translation_scale_to_gotrack,
         )
 
         # GoTrack-side camera models (cached).

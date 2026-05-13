@@ -361,6 +361,30 @@ def main():
     trial_dir = out_root / trial_ts
     trial_dir.mkdir(parents=True, exist_ok=True)
 
+    # Tee stdout/stderr + add a file handler to root logger so every print()
+    # and every logger.* call is saved to trial_dir/track.log. Offline tools
+    # (video builder, post-trial analysis) read this log to correlate fid
+    # with per-frame events.
+    class _Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+        def write(self, s):
+            for st in self.streams:
+                try: st.write(s); st.flush()
+                except Exception: pass
+        def flush(self):
+            for st in self.streams:
+                try: st.flush()
+                except Exception: pass
+    log_path = trial_dir / "track.log"
+    log_fp = open(log_path, "a", buffering=1)
+    sys.stdout = _Tee(sys.__stdout__, log_fp)
+    sys.stderr = _Tee(sys.__stderr__, log_fp)
+    _file_handler = logging.FileHandler(log_path, mode="a")
+    _file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(name)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(_file_handler)
+    print(f"[track] log → {log_path}")
+
     ep: Optional[Path] = None
     if args.mode == "disk":
         exp_root = Path(args.exp_root).expanduser() if args.exp_root else None

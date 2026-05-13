@@ -134,19 +134,15 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
     grid_h, grid_w = tile_h * rows, tile_w * cols
     header_h = 60
     out_h, out_w = grid_h + header_h, grid_w
-    # Try H264 first (universally playable, incl. VSCode + browsers); fall
-    # back to mp4v if OpenCV wasn't built with libx264.
-    vw = None
-    for codec in ("avc1", "H264", "mp4v"):
-        vw = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*codec),
-                             fps, (out_w, out_h))
-        if vw.isOpened():
-            print(f"[build] codec={codec}")
-            break
-        vw.release()
-        vw = None
-    if vw is None:
-        raise SystemExit(f"could not open {out_path} with any codec")
+    # Write with mp4v (OpenCV's FFmpeg fails on H264 here because it picks
+    # h264_v4l2m2m, a hardware encoder that isn't available). We transcode
+    # to libx264 at the end with a subprocess ffmpeg call for universal
+    # playback (VSCode / browsers).
+    tmp_path = out_path.with_suffix(".mp4v.mp4")
+    vw = cv2.VideoWriter(str(tmp_path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         fps, (out_w, out_h))
+    if not vw.isOpened():
+        raise SystemExit(f"could not open {tmp_path} (mp4v)")
     serial_idx = {s: i for i, s in enumerate(serials)}
     print(f"[build] serials={n} grid={rows}x{cols} tile={tile_w}x{tile_h} fids={len(fids)}")
 
@@ -194,7 +190,26 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
                     (255, 255, 255), 2, cv2.LINE_AA)
         vw.write(canvas)
     vw.release()
-    print(f"[build] wrote {out_path}")
+    # Transcode mp4v → libx264 H264 for universal playback (VSCode, browsers).
+    import shutil as _sh, subprocess as _sp
+    ffmpeg = _sh.which("ffmpeg")
+    if ffmpeg:
+        print(f"[build] transcoding {tmp_path.name} → {out_path.name} (libx264)")
+        ret = _sp.run(
+            [ffmpeg, "-y", "-i", str(tmp_path),
+             "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-preset", "fast", str(out_path)],
+            capture_output=True,
+        )
+        if ret.returncode == 0:
+            tmp_path.unlink(missing_ok=True)
+            print(f"[build] wrote {out_path}")
+        else:
+            print(f"[build] ffmpeg transcode failed (rc={ret.returncode}); keeping {tmp_path}")
+            print(ret.stderr.decode(errors="ignore")[-500:])
+    else:
+        tmp_path.rename(out_path.with_suffix(".mp4"))
+        print(f"[build] ffmpeg not found; wrote mp4v as {out_path.with_suffix('.mp4')}")
 
 
 def main() -> None:

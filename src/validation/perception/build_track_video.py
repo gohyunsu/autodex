@@ -1,29 +1,40 @@
-"""Build a merged debug video from a trial directory.
+"""Build a merged debug video from a trial directory with mesh overlay.
+
+Per (fid, serial) tile: 1/4-scale undistorted frame with green nvdiffrast
+mesh silhouette overlay rendered from pose_log's pose_world. Header text
+shows fid + fit stats.
 
 Inputs (per trial):
 - `{crops_root}/{obj}/{fid:06d}/{serial}_frame.jpg`    — 1/4-scale undistorted full frame
-- `{crops_root}/{obj}/{fid:06d}/bbox.json`             — {serial: [[u,v]x4]} in ORIG-image coords
-- `{trial_dir}/pose_log.json`                          — per-frame fit info
+- `{trial_dir}/cam_param/{intrinsics,extrinsics}.json` — calibration saved by track_interactive
+- `{trial_dir}/pose_log.json`                          — per-frame pose_world + fit info
 
-Output:
-- `{trial_dir}/track_debug.mp4`
+Output: `{trial_dir}/track_debug.mp4`
 
-Layout: all unique serials sorted; arranged into a (rows × cols) grid where
-each (i, j) tile is permanently assigned to one serial. Missing frames for a
-serial at a given fid show a black tile labelled "missing". The fid + fit
-status (n_inliers, mean_residual_mm, reason if failed) is overlaid as text
-on top of the merged grid.
+Run in `foundationpose` conda env (needs pytorch3d for SilhouetteOptimizer).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ASSETS_ROOT = Path.home() / "shared_data/AutoDex/content/assets/object/paradex"
+MESH_BASE = ASSETS_ROOT
+
+
+def _resolve_mesh(obj_name: str) -> Path:
+    p = MESH_BASE / obj_name / "raw_mesh" / f"{obj_name}.obj"
+    if not p.exists():
+        raise SystemExit(f"mesh not found: {p}")
+    return p
 
 
 def _list_fids(crops_dir: Path) -> List[int]:
@@ -46,15 +57,45 @@ def _load_pose_log(trial_dir: Path) -> Dict[int, Dict]:
     return {int(rec["frame_id"]): rec for rec in log}
 
 
-def _draw_bbox(img: np.ndarray, corners_orig: List[List[float]],
-               scale: float, color=(0, 255, 0), thickness=2) -> None:
-    pts = np.asarray(corners_orig, dtype=np.float32) * scale
-    pts = pts.round().astype(np.int32).reshape(-1, 1, 2)
-    cv2.polylines(img, [pts], isClosed=True, color=color, thickness=thickness)
+def _load_cam_params(trial_dir: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], int, int]:
+    """Returns K_undist per serial, extrinsic_cw per serial, H, W (originals)."""
+    intr_path = trial_dir / "cam_param" / "intrinsics.json"
+    extr_path = trial_dir / "cam_param" / "extrinsics.json"
+    intr_raw = json.loads(intr_path.read_text())
+    extr_raw = json.loads(extr_path.read_text())
+    K = {s: np.asarray(v["K_undist"], dtype=np.float64) for s, v in intr_raw.items()}
+    T = {}
+    for s, v in extr_raw.items():
+        e = np.asarray(v, dtype=np.float64)
+        if e.shape == (3, 4):
+            e = np.vstack([e, [0, 0, 0, 1]])
+        T[s] = e
+    sample = next(iter(intr_raw.values()))
+    return K, T, int(sample["height"]), int(sample["width"])
 
 
-def build_video(crops_dir: Path, trial_dir: Path, out_path: Path,
-                fps: int = 10, fixed_tile_wh: Tuple[int, int] | None = None) -> None:
+def _render_overlay(image_rgb: np.ndarray, pose_world: np.ndarray,
+                    K: np.ndarray, T: np.ndarray, H: int, W: int,
+                    glctx, mt, color=(0, 200, 0), alpha=0.5) -> np.ndarray:
+    """Render mesh silhouette under pose_world via nvdiffrast and alpha-composite
+    on top of image_rgb (HxWx3 uint8). K/T must match the supplied H/W."""
+    import torch
+    sys.path.insert(0, str(REPO_ROOT / "autodex/perception/thirdparty/FoundationPose"))
+    from Utils import nvdiffrast_render  # type: ignore
+    pose_cam = T @ pose_world
+    pt = torch.as_tensor(pose_cam, device="cuda", dtype=torch.float32).reshape(1, 4, 4)
+    rc, _, _ = nvdiffrast_render(K=np.asarray(K, np.float32), H=H, W=W,
+                                  ob_in_cams=pt, glctx=glctx, mesh_tensors=mt,
+                                  use_light=False)
+    sil = (rc[0].sum(dim=2) > 0).detach().cpu().numpy()
+    out = image_rgb.copy()
+    color_arr = np.array(color, dtype=np.float32)
+    out[sil] = (out[sil] * (1 - alpha) + color_arr * alpha).astype(np.uint8)
+    return out
+
+
+def build_video(crops_dir: Path, trial_dir: Path, mesh_path: Path, out_path: Path,
+                fps: int = 10) -> None:
     fids = _list_fids(crops_dir)
     if not fids:
         raise SystemExit(f"no fids in {crops_dir}")
@@ -62,14 +103,21 @@ def build_video(crops_dir: Path, trial_dir: Path, out_path: Path,
     if not serials:
         raise SystemExit(f"no frames in {crops_dir}")
     pose_log = _load_pose_log(trial_dir)
+    K_orig_all, T_all, H_orig, W_orig = _load_cam_params(trial_dir)
 
-    if fixed_tile_wh is None:
-        sample = cv2.imread(str(next(crops_dir.glob(f"{fids[0]:06d}/*_frame.jpg"))))
-        if sample is None:
-            raise SystemExit("could not read sample frame")
-        tile_h, tile_w = sample.shape[:2]
-    else:
-        tile_w, tile_h = fixed_tile_wh
+    sample = cv2.imread(str(next(crops_dir.glob(f"{fids[0]:06d}/*_frame.jpg"))))
+    if sample is None:
+        raise SystemExit("could not read sample frame")
+    tile_h, tile_w = sample.shape[:2]
+    scale = tile_h / float(H_orig)
+    # Scale intrinsics to the tile resolution for rendering.
+    K_tile = {s: (K_orig_all[s].copy() * scale) for s in K_orig_all}
+    for s in K_tile:
+        K_tile[s][2, 2] = 1.0  # restore K[2,2]=1 after scaling
+
+    from autodex.perception.silhouette import SilhouetteOptimizer
+    sil_opt = SilhouetteOptimizer(str(mesh_path), device="cuda")
+    glctx, mt = sil_opt.glctx, sil_opt.mesh_tensors
 
     n = len(serials)
     cols = math.ceil(math.sqrt(n * 1.6))
@@ -77,22 +125,17 @@ def build_video(crops_dir: Path, trial_dir: Path, out_path: Path,
     grid_h, grid_w = tile_h * rows, tile_w * cols
     header_h = 60
     out_h, out_w = grid_h + header_h, grid_w
-
-    # Original frame size = 4× downscaled tile size (because we save at /4).
-    scale_to_tile = 1.0 / 4.0
-
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     vw = cv2.VideoWriter(str(out_path), fourcc, fps, (out_w, out_h))
     if not vw.isOpened():
         raise SystemExit(f"could not open {out_path} for writing")
-
     serial_idx = {s: i for i, s in enumerate(serials)}
-
     print(f"[build] serials={n} grid={rows}x{cols} tile={tile_w}x{tile_h} fids={len(fids)}")
+
     for fid in fids:
         fid_dir = crops_dir / f"{fid:06d}"
-        bbox_path = fid_dir / "bbox.json"
-        bboxes = json.loads(bbox_path.read_text()) if bbox_path.exists() else {}
+        rec = pose_log.get(fid)
+        pose_world = np.asarray(rec["pose_world"], dtype=np.float64).reshape(4, 4) if rec else None
 
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
         for s in serials:
@@ -106,9 +149,17 @@ def build_video(crops_dir: Path, trial_dir: Path, out_path: Path,
                 if img is not None:
                     if img.shape[:2] != (tile_h, tile_w):
                         img = cv2.resize(img, (tile_w, tile_h))
+                    if pose_world is not None and s in K_tile:
+                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        try:
+                            img_rgb = _render_overlay(img_rgb, pose_world,
+                                                       K_tile[s], T_all[s],
+                                                       tile_h, tile_w, glctx, mt)
+                            img = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                        except Exception as exc:
+                            cv2.putText(img, f"overlay err: {exc}", (5, tile_h - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                     tile = img
-                    if s in bboxes:
-                        _draw_bbox(tile, bboxes[s], scale=scale_to_tile)
             else:
                 cv2.putText(tile, "missing", (10, tile_h // 2),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 200), 2)
@@ -116,15 +167,13 @@ def build_video(crops_dir: Path, trial_dir: Path, out_path: Path,
                         (255, 255, 255), 1, cv2.LINE_AA)
             canvas[y0:y0 + tile_h, x0:x0 + tile_w] = tile
 
-        rec = pose_log.get(fid)
         if rec is None:
             status = f"fid={fid}  (no pose_log entry)"
         else:
             status = (f"fid={fid}  n_inliers={rec.get('n_inliers','?')}  "
-                      f"resid_mm={rec.get('mean_residual_mm','?'):.2f}")
+                      f"resid_mm={float(rec.get('mean_residual_mm', -1)):.2f}")
         cv2.putText(canvas, status, (10, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
                     (255, 255, 255), 2, cv2.LINE_AA)
-
         vw.write(canvas)
     vw.release()
     print(f"[build] wrote {out_path}")
@@ -132,18 +181,18 @@ def build_video(crops_dir: Path, trial_dir: Path, out_path: Path,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--trial-dir", required=True, help="e.g. ~/shared_data/AutoDex/experiment/.../{ts}")
-    ap.add_argument("--crops-root", default="~/shared_data/AutoDex/debug/gotrack_crops",
-                    help="where daemon rsynced crops to; obj subdir is appended")
+    ap.add_argument("--trial-dir", required=True)
+    ap.add_argument("--crops-root", default="~/shared_data/AutoDex/debug/gotrack_crops")
     ap.add_argument("--obj", required=True)
     ap.add_argument("--fps", type=int, default=10)
-    ap.add_argument("--out", default=None, help="default {trial_dir}/track_debug.mp4")
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     trial_dir = Path(args.trial_dir).expanduser()
     crops_dir = Path(args.crops_root).expanduser() / args.obj
+    mesh_path = _resolve_mesh(args.obj)
     out = Path(args.out).expanduser() if args.out else trial_dir / "track_debug.mp4"
-    build_video(crops_dir, trial_dir, out, fps=args.fps)
+    build_video(crops_dir, trial_dir, mesh_path, out, fps=args.fps)
 
 
 if __name__ == "__main__":

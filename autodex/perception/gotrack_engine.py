@@ -411,7 +411,11 @@ class GoTrackEngine:
                     a = _cv2.cvtColor(a, _cv2.COLOR_RGB2BGR)
                 return a
 
-            bboxes: Dict[str, list] = {}
+            # Save per-cam bbox files: one JSON per serial. Previously we
+            # wrote a single bbox.json per fid_dir, but each PC's daemon
+            # writes to the same NAS path on rsync — the last PC's bbox.json
+            # overwrites everyone else's, leaving the offline video missing
+            # bbox for all cams except the last-rsynced PC's.
             for s in self.serials:
                 dbg = per_camera_debug.get(s)
                 if dbg is None:
@@ -464,12 +468,10 @@ class GoTrackEngine:
                 rays_orig = (R_wo.T @ rays_world.T).T
                 uv_orig = (K_orig @ rays_orig.T).T
                 uv_orig = uv_orig[:, :2] / uv_orig[:, 2:3]
-                bboxes[str(s)] = uv_orig.round(2).tolist()
-            if bboxes:
                 try:
                     import json
-                    with open(f"{save_dir}/bbox.json", "w") as fh:
-                        json.dump(bboxes, fh)
+                    with open(f"{save_dir}/{s}_bbox.json", "w") as fh:
+                        json.dump(uv_orig.round(2).tolist(), fh)
                 except Exception:
                     pass
         except Exception as exc:

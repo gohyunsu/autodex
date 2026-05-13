@@ -165,8 +165,22 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
         fid_dir = crops_dir / f"{fid:06d}"
         rec = pose_log.get(fid)
         pose_world = np.asarray(rec["pose_world"], dtype=np.float64).reshape(4, 4) if rec else None
-        bbox_path = fid_dir / "bbox.json"
-        bboxes = json.loads(bbox_path.read_text()) if bbox_path.exists() else {}
+        # Per-cam bbox files (engine writes {serial}_bbox.json per cam to avoid
+        # filename collision between PCs after NAS rsync). Backwards-compat with
+        # the old combined bbox.json layout.
+        bboxes: Dict[str, list] = {}
+        for bp in fid_dir.glob("*_bbox.json"):
+            sid = bp.stem.replace("_bbox", "")
+            try:
+                bboxes[sid] = json.loads(bp.read_text())
+            except Exception:
+                pass
+        legacy_bbox = fid_dir / "bbox.json"
+        if legacy_bbox.exists():
+            try:
+                bboxes.update(json.loads(legacy_bbox.read_text()))
+            except Exception:
+                pass
 
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
         for s in serials:

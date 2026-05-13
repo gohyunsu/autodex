@@ -134,10 +134,19 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
     grid_h, grid_w = tile_h * rows, tile_w * cols
     header_h = 60
     out_h, out_w = grid_h + header_h, grid_w
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    vw = cv2.VideoWriter(str(out_path), fourcc, fps, (out_w, out_h))
-    if not vw.isOpened():
-        raise SystemExit(f"could not open {out_path} for writing")
+    # Try H264 first (universally playable, incl. VSCode + browsers); fall
+    # back to mp4v if OpenCV wasn't built with libx264.
+    vw = None
+    for codec in ("avc1", "H264", "mp4v"):
+        vw = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*codec),
+                             fps, (out_w, out_h))
+        if vw.isOpened():
+            print(f"[build] codec={codec}")
+            break
+        vw.release()
+        vw = None
+    if vw is None:
+        raise SystemExit(f"could not open {out_path} with any codec")
     serial_idx = {s: i for i, s in enumerate(serials)}
     print(f"[build] serials={n} grid={rows}x{cols} tile={tile_w}x{tile_h} fids={len(fids)}")
 

@@ -362,7 +362,7 @@ class GoTrackEngine:
         # === DIAG: save crop images to ~/shared_data/AutoDex/debug/gotrack_crops/{obj}/{frame:06d}/{serial}_*.png ===
         try:
             import os, cv2 as _cv2
-            if self._frame_count < 5:
+            if True:  # save every frame's crops for offline analysis
                 home = os.path.expanduser("~")
                 save_dir = f"{home}/shared_data/AutoDex/debug/gotrack_crops/{self.object_name}/{int(frame_index):06d}"
                 os.makedirs(save_dir, exist_ok=True)

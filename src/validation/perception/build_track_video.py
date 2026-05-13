@@ -38,6 +38,8 @@ def _resolve_mesh(obj_name: str) -> Path:
 
 
 def _list_fids(crops_dir: Path) -> List[int]:
+    if not crops_dir.exists():
+        return []
     return sorted(int(p.name) for p in crops_dir.iterdir() if p.is_dir() and p.name.isdigit())
 
 
@@ -59,12 +61,19 @@ def _load_pose_log(trial_dir: Path) -> Dict[int, Dict]:
 
 def _load_cam_params(calib_dir: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], int, int]:
     """Returns K_undist per serial, extrinsic_cw per serial, H, W (originals).
-    Reads the system calib dir layout (intrinsics_undistort / original_intrinsics)."""
+    Supports both layouts: the trial-side dump (K_undist key, written by
+    track_interactive at trial start) and the system calib dir
+    (intrinsics_undistort key)."""
     intr_path = calib_dir / "intrinsics.json"
     extr_path = calib_dir / "extrinsics.json"
     intr_raw = json.loads(intr_path.read_text())
     extr_raw = json.loads(extr_path.read_text())
-    K = {s: np.asarray(v["intrinsics_undistort"], dtype=np.float64) for s, v in intr_raw.items()}
+    K = {}
+    for s, v in intr_raw.items():
+        if "K_undist" in v:
+            K[s] = np.asarray(v["K_undist"], dtype=np.float64)
+        else:
+            K[s] = np.asarray(v["intrinsics_undistort"], dtype=np.float64)
     T = {}
     for s, v in extr_raw.items():
         e = np.asarray(v, dtype=np.float64)
@@ -182,23 +191,29 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--trial-dir", required=True)
+    ap.add_argument("--trial-dir", required=True,
+                    help="experiment trial dir; trial_ts is its basename")
     ap.add_argument("--crops-root", default="~/shared_data/AutoDex/debug/gotrack_crops")
     ap.add_argument("--calib-dir", default=None,
-                    help="Defaults to latest dir under ~/shared_data/cam_param/")
+                    help="Defaults to {crops_root}/{obj}/{trial_ts}/cam_param/ "
+                         "(written by track_interactive)")
     ap.add_argument("--obj", required=True)
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     trial_dir = Path(args.trial_dir).expanduser()
-    crops_dir = Path(args.crops_root).expanduser() / args.obj
+    trial_ts = trial_dir.name
+    crops_dir = Path(args.crops_root).expanduser() / args.obj / trial_ts
     if args.calib_dir:
         calib_dir = Path(args.calib_dir).expanduser()
     else:
-        cam_root = Path.home() / "shared_data/cam_param"
-        calib_dir = sorted(cam_root.iterdir())[-1]
+        calib_dir = crops_dir / "cam_param"
+        if not calib_dir.exists():
+            cam_root = Path.home() / "shared_data/cam_param"
+            calib_dir = sorted(cam_root.iterdir())[-1]
     print(f"[calib] {calib_dir}")
+    print(f"[crops] {crops_dir}")
     mesh_path = _resolve_mesh(args.obj)
     out = Path(args.out).expanduser() if args.out else trial_dir / "track_debug.mp4"
     build_video(crops_dir, trial_dir, calib_dir, mesh_path, out, fps=args.fps)

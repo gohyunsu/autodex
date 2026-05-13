@@ -233,6 +233,13 @@ class GoTrackDaemon:
             logger.warning("[loop] stop_event was set at entry; clearing")
             self.stop_event.clear()
 
+        # Pick up the trial_ts the robot PC sent with the start command, so
+        # this trial's crops land under .../{obj}/{trial_ts}/{fid}/ and don't
+        # collide with prior trials.
+        start_info = self.cmd_receiver.event_info.get("start", {}) or {}
+        trial_ts = str(start_info.get("trial_ts", "")) or None
+        self.engine.set_trial_ts(trial_ts)
+
         my_serials = list(self.engine.cameras.keys())
         last_frame_ids = {s: 0 for s in my_serials}
         last_published_frame_id: Optional[int] = None

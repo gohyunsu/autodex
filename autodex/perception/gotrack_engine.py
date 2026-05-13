@@ -177,6 +177,10 @@ class GoTrackEngine:
         self._num_iters = int(num_iters)
         self._first_frame_num_iters = int(first_frame_num_iters)
         self._frame_count = 0
+        # trial_ts is set by the daemon from the robot PC's start command, so
+        # crops go to .../{obj}/{trial_ts}/{fid}/. If None, fall back to a
+        # flat .../{obj}/{fid}/ layout (older behaviour).
+        self._trial_ts: Optional[str] = None
 
         # Async crop saver: a background thread drains (path, np.uint8 BGR) jobs
         # so PNG encode + disk write doesn't block the engine loop. queue has a
@@ -266,6 +270,11 @@ class GoTrackEngine:
             skip_pnp=skip_pnp,
         )
         self.mask_free = mask_free
+
+    def set_trial_ts(self, ts: Optional[str]) -> None:
+        """Daemon calls this when a 'start' command arrives so crops land
+        under {obj}/{trial_ts}/{fid}/ instead of {obj}/{fid}/."""
+        self._trial_ts = ts
 
     def _set_iters(self, n: int) -> None:
         """GoTrackOpts is a NamedTuple (immutable). Try to replace; fall back
@@ -389,7 +398,9 @@ class GoTrackEngine:
             import os, cv2 as _cv2, queue as _q
             # Save to LOCAL disk during the run; gotrack_daemon rsyncs to NAS
             # on stop. NAS writes are slow enough to back the saver queue up.
-            save_dir = f"/tmp/gotrack_crops/{self.object_name}/{int(frame_index):06d}"
+            trial_seg = f"{self._trial_ts}/" if self._trial_ts else ""
+            save_dir = (f"/tmp/gotrack_crops/{self.object_name}/"
+                        f"{trial_seg}{int(frame_index):06d}")
             os.makedirs(save_dir, exist_ok=True)
 
             def _prep(arr):

@@ -553,8 +553,28 @@ def main():
             print("[track] aborted before start")
             return
 
-        # 7) Send "start" to gotrack daemons.
-        cmd_track.send_command("start", wait=False, cmd_info={})
+        # Save current cam_param at trial level on NAS so build_track_video.py
+        # can find the calibration that was active for this exact trial.
+        trial_crops_nas = (Path.home() / "shared_data/AutoDex/debug/gotrack_crops"
+                           / args.obj / trial_ts)
+        trial_crops_nas.mkdir(parents=True, exist_ok=True)
+        cam_param_nas = trial_crops_nas / "cam_param"
+        cam_param_nas.mkdir(parents=True, exist_ok=True)
+        with open(cam_param_nas / "intrinsics.json", "w") as f:
+            json.dump({s: {
+                "K_undist": np.asarray(v["K_undist"]).tolist(),
+                "K_orig": np.asarray(v["K_orig"]).tolist(),
+                "dist_params": np.asarray(v["dist_params"]).tolist(),
+                "width": int(v["width"]),
+                "height": int(v["height"]),
+            } for s, v in intrinsics_full.items()}, f, indent=2)
+        with open(cam_param_nas / "extrinsics.json", "w") as f:
+            json.dump({s: np.asarray(v).reshape(4, 4).tolist()
+                       for s, v in extrinsics_full.items()}, f, indent=2)
+
+        # 7) Send "start" to gotrack daemons with the trial_ts so each daemon
+        # writes its crops under .../{obj}/{trial_ts}/{fid:06d}/.
+        cmd_track.send_command("start", wait=False, cmd_info={"trial_ts": trial_ts})
         print("[track] tracking started")
 
         poses_dir = trial_dir / "poses"

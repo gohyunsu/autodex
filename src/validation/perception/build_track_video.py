@@ -160,7 +160,8 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
     serial_idx = {s: i for i, s in enumerate(serials)}
     print(f"[build] serials={n} grid={rows}x{cols} tile={tile_w}x{tile_h} fids={len(fids)}")
 
-    for fid in fids:
+    from tqdm import tqdm
+    for fid in tqdm(fids, desc="build_track_video"):
         fid_dir = crops_dir / f"{fid:06d}"
         rec = pose_log.get(fid)
         pose_world = np.asarray(rec["pose_world"], dtype=np.float64).reshape(4, 4) if rec else None

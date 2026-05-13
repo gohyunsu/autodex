@@ -150,6 +150,8 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
         fid_dir = crops_dir / f"{fid:06d}"
         rec = pose_log.get(fid)
         pose_world = np.asarray(rec["pose_world"], dtype=np.float64).reshape(4, 4) if rec else None
+        bbox_path = fid_dir / "bbox.json"
+        bboxes = json.loads(bbox_path.read_text()) if bbox_path.exists() else {}
 
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
         for s in serials:
@@ -173,6 +175,11 @@ def build_video(crops_dir: Path, trial_dir: Path, calib_dir: Path,
                         except Exception as exc:
                             cv2.putText(img, f"overlay err: {exc}", (5, tile_h - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                    # Draw crop bbox in red — corners in original undistorted
+                    # image coords, scale to tile resolution.
+                    if s in bboxes:
+                        _draw_bbox(img, bboxes[s], scale=tile_h / float(H_orig),
+                                   color=(0, 0, 255))
                     tile = img
             else:
                 cv2.putText(tile, "missing", (10, tile_h // 2),

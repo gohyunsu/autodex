@@ -387,6 +387,8 @@ def main():
     print(f"[track] {len(intrinsics_full)} cams active ({len(args.pc_list)} PCs)  {H}x{W}")
 
     rcc = None
+    sync_generator = None
+    timestamp_monitor = None
     orch: Optional[InitOrchestrator] = None
     cmd_track: Any = None
     tracker: Optional[GoTrackTracker] = None
@@ -397,12 +399,27 @@ def main():
     init_pose_world: Optional[np.ndarray] = None
 
     try:
-        # 1) Optional camera stream.
+        # 1) Optional camera stream with hardware sync.
+        # When the stream is enabled we run UTGE900 (signal_generator) +
+        # TimestampMonitor on the robot PC. With syncMode=True the cameras
+        # advance their SHM `fid` only on each signal pulse, so all cameras
+        # across all PCs share the same global frame_id. The TimestampMonitor
+        # reads back (frame_id, pc_time) per pulse from the trigger-wired
+        # monitor camera, so the tracker can compare its received fids to
+        # what the host PC thinks the *current* fid is.
         if args.mode == "live" and args.auto_start_stream:
             from paradex.io.camera_system.remote_camera_controller import remote_camera_controller
-            print(f"[stream] starting camera stream on {len(args.pc_list)} PCs @ {args.stream_fps} FPS...")
+            from paradex.io.camera_system.signal_generator import UTGE900
+            from paradex.io.camera_system.timestamp_monitor import TimestampMonitor
+            from paradex.utils.system import network_info
+            print(f"[stream] starting signal_generator @ {args.stream_fps} FPS...")
+            sync_generator = UTGE900(**network_info["signal_generator"]["param"])
+            timestamp_monitor = TimestampMonitor(**network_info["timestamp"]["param"])
+            timestamp_monitor.start(None)
+            sync_generator.start(fps=args.stream_fps)
+            print(f"[stream] starting camera stream on {len(args.pc_list)} PCs (syncMode=True)...")
             rcc = remote_camera_controller("track_interactive", pc_list=args.pc_list)
-            rcc.start("stream", False, fps=args.stream_fps)
+            rcc.start("stream", True, fps=args.stream_fps)
             if args.stream_warmup_s > 0:
                 time.sleep(args.stream_warmup_s)
             print("[stream] started")
@@ -526,21 +543,36 @@ def main():
             # Background watchdog: every 2s report received / success / fail
             # breakdown so failures are visible. n_yielded alone is meaningless
             # — pair it with received count + per-reason fail counts.
+            # When timestamp_monitor is available it reports the host-side
+            # current global fid so we can compute per-PC and tracker lag.
             def _watchdog():
                 while not keyboard.stop_event.is_set():
                     time.sleep(2.0)
                     with tracker._status_lock:
                         per_pc = dict(tracker.status.get("per_pc_last_frame", {}))
                         counts = dict(tracker.status.get("counts", {}))
+                        last_fid_yielded = int(tracker.status.get("frame_id", -1))
                     received = int(counts.get("received", 0))
                     success = int(counts.get("success", 0))
                     fail_by = dict(counts.get("fail_by_reason", {}))
                     n_inflight = len(tracker.sync_buffer._buf)
                     rate = (success / received * 100.0) if received else 0.0
                     fail_str = ", ".join(f"{k}={v}" for k, v in sorted(fail_by.items())) or "-"
+                    cur_fid = -1
+                    if timestamp_monitor is not None:
+                        try:
+                            cur_fid = int(timestamp_monitor.get_data().get("frame_id", -1))
+                        except Exception:
+                            cur_fid = -1
+                    per_pc_str = {ip: v.get('frame_id') for ip, v in per_pc.items()}
+                    lag_str = "-"
+                    if cur_fid > 0:
+                        per_pc_lag = {ip: cur_fid - int(v.get('frame_id', 0)) for ip, v in per_pc.items()}
+                        tracker_lag = cur_fid - last_fid_yielded if last_fid_yielded > 0 else -1
+                        lag_str = f"current={cur_fid} tracker_lag={tracker_lag} per_pc_lag={per_pc_lag}"
                     print(f"[track-worker:watchdog] received={received} success={success} "
                           f"({rate:.1f}%) fails[{fail_str}] inflight={n_inflight} "
-                          f"per_pc_last_fid={ {ip: v.get('frame_id') for ip, v in per_pc.items()} }")
+                          f"per_pc_last_fid={per_pc_str} {lag_str}")
             threading.Thread(target=_watchdog, daemon=True).start()
             try:
                 for fid, pose, info in tracker.track(init_pose_world):
@@ -640,6 +672,14 @@ def main():
                 rcc.end()
             except Exception:
                 pass
+        if timestamp_monitor is not None:
+            for fn in (timestamp_monitor.stop, timestamp_monitor.end):
+                try: fn()
+                except Exception: pass
+        if sync_generator is not None:
+            for fn in (sync_generator.stop, sync_generator.end):
+                try: fn()
+                except Exception: pass
         keyboard.close()
 
 

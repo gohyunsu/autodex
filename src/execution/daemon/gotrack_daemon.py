@@ -354,10 +354,39 @@ class GoTrackDaemon:
                 self._process_loop()
                 logger.info("[daemon] process loop stopped")
                 self.stop_event.clear()
+                # Background rsync local debug crops → NAS. Local writes are
+                # fast and don't block engine; the upload runs after the run
+                # ends so it doesn't affect tracking latency.
+                self._upload_debug_crops()
 
             time.sleep(0.05)
 
         logger.info("[daemon] exit")
+
+    def _upload_debug_crops(self) -> None:
+        """rsync local /tmp/gotrack_crops/ to NAS, then wipe local."""
+        import os, shutil, subprocess, threading
+        local_root = "/tmp/gotrack_crops"
+        if not os.path.isdir(local_root):
+            return
+        nas_root = os.path.expanduser("~/shared_data/AutoDex/debug/gotrack_crops")
+        os.makedirs(nas_root, exist_ok=True)
+
+        def _do_upload():
+            try:
+                logger.info(f"[diag-crops] uploading {local_root} → {nas_root}")
+                subprocess.run(
+                    ["rsync", "-rt", "--no-owner", "--no-group", "--remove-source-files",
+                     f"{local_root}/", f"{nas_root}/"],
+                    check=False,
+                )
+                # Remove empty dirs after --remove-source-files leaves them.
+                shutil.rmtree(local_root, ignore_errors=True)
+                logger.info("[diag-crops] upload complete")
+            except Exception as exc:
+                logger.warning(f"[diag-crops] upload failed: {exc}")
+
+        threading.Thread(target=_do_upload, daemon=True).start()
 
     def close(self) -> None:
         self.exit_event.set()

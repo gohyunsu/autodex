@@ -178,6 +178,28 @@ class GoTrackEngine:
         self._first_frame_num_iters = int(first_frame_num_iters)
         self._frame_count = 0
 
+        # Async crop saver: a background thread drains (path, np.uint8 BGR) jobs
+        # so PNG encode + disk write doesn't block the engine loop. queue has a
+        # bound so a slow disk can't grow memory without limit; over-bound jobs
+        # are dropped with a counter.
+        import queue, threading
+        self._crop_save_q: "queue.Queue[tuple[str, np.ndarray] | None]" = queue.Queue(maxsize=256)
+        self._crop_save_drops = 0
+
+        def _crop_saver():
+            import cv2 as _cv2
+            while True:
+                item = self._crop_save_q.get()
+                if item is None:
+                    break
+                path, arr = item
+                try:
+                    _cv2.imwrite(path, arr)
+                except Exception as exc:
+                    logger.warning(f"[diag-crops] write failed for {path}: {exc}")
+        self._crop_save_thread = threading.Thread(target=_crop_saver, daemon=True)
+        self._crop_save_thread.start()
+
         logger.info(f"[GoTrackEngine] loading model on {device}")
         self.model = load_gotrack_model(
             config_path=cfg_path,
@@ -359,36 +381,40 @@ class GoTrackEngine:
             if dbg is not None:
                 per_camera_debug[cam] = dbg
 
-        # === DIAG: save crop images to ~/shared_data/AutoDex/debug/gotrack_crops/{obj}/{frame:06d}/{serial}_*.png ===
+        # === DIAG: queue crop images for async save to
+        # ~/shared_data/AutoDex/debug/gotrack_crops/{obj}/{frame:06d}/{serial}_*.png.
+        # PNG encode + disk write run on a background thread so this stays
+        # off the engine hot path.
         try:
-            import os, cv2 as _cv2
-            if True:  # save every frame's crops for offline analysis
-                home = os.path.expanduser("~")
-                save_dir = f"{home}/shared_data/AutoDex/debug/gotrack_crops/{self.object_name}/{int(frame_index):06d}"
-                os.makedirs(save_dir, exist_ok=True)
-                for s in self.serials:
-                    dbg = per_camera_debug.get(s)
-                    if dbg is None:
+            import os, cv2 as _cv2, queue as _q
+            # Save to LOCAL disk during the run; gotrack_daemon rsyncs to NAS
+            # on stop. NAS writes are slow enough to back the saver queue up.
+            save_dir = f"/tmp/gotrack_crops/{self.object_name}/{int(frame_index):06d}"
+            os.makedirs(save_dir, exist_ok=True)
+
+            def _prep(arr):
+                a = np.asarray(arr)
+                if a.dtype != np.uint8:
+                    a = np.clip(a * 255 if a.max() <= 1.0 else a, 0, 255).astype(np.uint8)
+                if a.ndim == 3 and a.shape[2] == 3:
+                    a = _cv2.cvtColor(a, _cv2.COLOR_RGB2BGR)
+                return a
+
+            for s in self.serials:
+                dbg = per_camera_debug.get(s)
+                if dbg is None:
+                    continue
+                for key, suffix in (("query_rgb_crop", "query"),
+                                    ("template_rgb_crop", "template")):
+                    arr = dbg.get(key)
+                    if arr is None:
                         continue
-                    q = dbg.get("query_rgb_crop")
-                    t = dbg.get("template_rgb_crop")
-                    if q is not None:
-                        q_arr = np.asarray(q)
-                        if q_arr.dtype != np.uint8:
-                            q_arr = np.clip(q_arr * 255 if q_arr.max() <= 1.0 else q_arr, 0, 255).astype(np.uint8)
-                        if q_arr.ndim == 3 and q_arr.shape[2] == 3:
-                            q_arr = _cv2.cvtColor(q_arr, _cv2.COLOR_RGB2BGR)
-                        _cv2.imwrite(f"{save_dir}/{s}_query.png", q_arr)
-                    if t is not None:
-                        t_arr = np.asarray(t)
-                        if t_arr.dtype != np.uint8:
-                            t_arr = np.clip(t_arr * 255 if t_arr.max() <= 1.0 else t_arr, 0, 255).astype(np.uint8)
-                        if t_arr.ndim == 3 and t_arr.shape[2] == 3:
-                            t_arr = _cv2.cvtColor(t_arr, _cv2.COLOR_RGB2BGR)
-                        _cv2.imwrite(f"{save_dir}/{s}_template.png", t_arr)
-                logger.info(f"[diag-crops] saved to {save_dir}")
+                    try:
+                        self._crop_save_q.put_nowait((f"{save_dir}/{s}_{suffix}.png", _prep(arr)))
+                    except _q.Full:
+                        self._crop_save_drops += 1
         except Exception as exc:
-            logger.warning(f"[diag-crops] save failed: {exc}")
+            logger.warning(f"[diag-crops] enqueue failed: {exc}")
 
         # === DIAG: per-cam debug state right after batch refinement ===
         diag_records: Dict[str, str] = {}

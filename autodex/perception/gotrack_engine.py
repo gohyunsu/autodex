@@ -370,17 +370,22 @@ class GoTrackEngine:
         )
 
         t0 = _time.perf_counter()
-        per_camera_records = _process_group_for_timestep_anchor(
-            device_state=device_state,
-            frame_batch=frame_batch,
-            camera_models=self.camera_models,
-            gotrack_camera_models=self.gotrack_camera_models,
-            extrinsics_map=extrinsics_map,
-            init_pose_world=prior_pose_world,
-            init_pose_source="prior",
-            args=self.args,
-            include_debug_images=include_debug_images,
-        )
+        # Wrap in bf16 autocast so DINOv2 attention layers receive bf16 q/k/v
+        # → xformers' memory-efficient attention picks up the bf16 kernel on
+        # Blackwell (cap 12.0). Without autocast, fp32 inputs force the slow
+        # native path (xformers' Blackwell-supporting kernels only do fp16/bf16).
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            per_camera_records = _process_group_for_timestep_anchor(
+                device_state=device_state,
+                frame_batch=frame_batch,
+                camera_models=self.camera_models,
+                gotrack_camera_models=self.gotrack_camera_models,
+                extrinsics_map=extrinsics_map,
+                init_pose_world=prior_pose_world,
+                init_pose_source="prior",
+                args=self.args,
+                include_debug_images=include_debug_images,
+            )
 
         # _process_group_for_timestep_anchor stores debug payloads inside each
         # frame_record under "debug_data". Extract them for stage 4.

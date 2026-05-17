@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Debug mode: Perception (distributed) -> Planning -> Visualize -> GUI Controller.
+"""Debug / step-through runner: FoundPose init -> plan -> viser preview -> GUI exec.
 
-Uses distributed daemon pipeline for fast perception,
-then launches the GUI controller for manual step-by-step execution.
+Single-trial counterpart to ``run_auto.py``. Pipeline is identical up to planning;
+after planning we launch the viser scene viewer and wait for ``y`` (execute on
+robot via the GUI controller) or ``q`` (skip). Use this when you want to inspect
+the planned trajectory before committing to an execution.
+
+Prerequisites:
+    bash scripts/init_daemons.sh start
 
 Usage:
     python src/execution/run_debug.py --obj attached_container
+    python src/execution/run_debug.py --obj brown_ramen --hand inspire_left
+    python src/execution/run_debug.py --obj brown_ramen --scene wall --wall_angle 0
 """
+from __future__ import annotations
+
 import argparse
 import datetime
 import json
@@ -14,135 +23,31 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
+import chime
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from paradex.io.camera_system.remote_camera_controller import remote_camera_controller
+from paradex.utils.system import get_pc_ip, get_camera_list
 from paradex.calibration.utils import save_current_camparam, save_current_C2R, load_c2r
 
-from autodex.utils.conversion import se32cart
-from autodex.utils.path import project_dir, obj_path
-from autodex.utils.robot_config import INIT_STATE, XARM_INIT, ALLEGRO_INIT
+from autodex.utils.path import project_dir
 from autodex.planner import GraspPlanner
 from autodex.planner.obstacles import add_obstacles
 from autodex.planner.visualizer import ScenePlanVisualizer
-from src.execution.daemon.perception_pipeline import PerceptionPipeline
+from autodex.executor.real import RealExecutor
+from autodex.perception.init_orchestrator import InitOrchestrator
 
-logging.basicConfig(level=logging.INFO, format='[%(name)s] %(message)s')
+from src.execution.scene_cfg import pose_world_to_scene_cfg
+from src.execution.run_auto import (
+    DEFAULT_PC_LIST, ASSETS_BASE, MESH_BASE, CAM_PARAM_ROOT, _load_calib,
+)
 
-
-SAM3_HOSTS = [
-    ("192.168.0.101", 5001),
-    ("192.168.0.102", 5001),
-    ("192.168.0.103", 5001),
-]
-FPOSE_HOSTS = [
-    ("192.168.0.104", 5003),
-    ("192.168.0.105", 5003),
-    ("192.168.0.106", 5003),
-]
-
-
-def find_planning_mesh(obj_name):
-    p = os.path.join(obj_path, obj_name, "processed_data", "mesh", "simplified.obj")
-    if os.path.exists(p):
-        return p
-    p2 = os.path.join(obj_path, obj_name, "raw_mesh", f"{obj_name}.obj")
-    if os.path.exists(p2):
-        return p2
-    raise FileNotFoundError(f"No planning mesh for {obj_name}")
-
-
-TABLE_SURFACE_Z = -0.1 + 0.039 + 0.1  # 0.039
-
-CYLINDER_OBJECTS = [
-    "pepper_tuna", "pepper_tuna_light", "pepsi", "pepsi_light",
-]
-
-def _snap_z_to_table(pose_robot, mesh_path):
-    """Ensure mesh bottom doesn't go below table surface."""
-    import trimesh
-
-    mesh = trimesh.load(mesh_path, process=False)
-    if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
-    verts = np.asarray(mesh.vertices)
-    verts_h = np.hstack([verts, np.ones((len(verts), 1))])
-    verts_robot = (pose_robot @ verts_h.T).T[:, :3]
-    bottom_z = verts_robot[:, 2].min()
-
-    if bottom_z < TABLE_SURFACE_Z:
-        delta = TABLE_SURFACE_Z - bottom_z
-        print(f"    [snap] Object bottom {bottom_z:.4f} < table {TABLE_SURFACE_Z:.4f}, raising by {delta:.4f}m")
-        pose_robot = pose_robot.copy()
-        pose_robot[2, 3] += delta
-
-    return pose_robot
-
-
-def _snap_cylinder_pose(pose_robot, obj_name):
-    """For y-axis symmetric objects, snap rotation to nearest tabletop pose."""
-    import glob
-
-    tabletop_dir = os.path.join(obj_path, obj_name, "processed_data", "info", "tabletop")
-    if not os.path.isdir(tabletop_dir):
-        return pose_robot
-
-    tabletop_files = sorted(glob.glob(os.path.join(tabletop_dir, "*.npy")))
-    if not tabletop_files:
-        return pose_robot
-
-    R_est = pose_robot[:3, :3]
-    y_est = R_est @ np.array([0, 1, 0])
-
-    best_diff = float("inf")
-    best_R_tab = R_est
-
-    for tf in tabletop_files:
-        R_tab = np.load(tf)[:3, :3]
-        y_tab_z = R_tab[2, 1]
-        diff = np.abs(np.abs(y_est[2]) - np.abs(y_tab_z))
-        if diff < best_diff:
-            best_diff = diff
-            best_R_tab = R_tab.copy()
-            if y_est[2] * y_tab_z < 0:
-                best_R_tab = best_R_tab @ np.diag([1, -1, -1]).astype(float)
-
-    y_tab = best_R_tab[:, 1]
-    phi = np.arctan2(y_est[1], y_est[0]) - np.arctan2(y_tab[1], y_tab[0])
-    c, s = np.cos(phi), np.sin(phi)
-    R_z = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-    best_R = R_z @ best_R_tab
-
-    print(f"    [cylinder] Snapped (y-z diff={best_diff:.3f}, z-rot={np.degrees(phi):.1f}deg)")
-    pose_robot = pose_robot.copy()
-    pose_robot[:3, :3] = best_R
-
-    return pose_robot
-
-
-def pose_world_to_scene_cfg(pose_world, c2r, obj_name):
-    pose_robot = np.linalg.inv(c2r) @ pose_world
-    mesh_path = find_planning_mesh(obj_name)
-    if obj_name in CYLINDER_OBJECTS:
-        pose_robot = _snap_cylinder_pose(pose_robot, obj_name)
-    pose_robot = _snap_z_to_table(pose_robot, mesh_path)
-    return {
-        "mesh": {
-            "target": {
-                "pose": se32cart(pose_robot).tolist(),
-                "file_path": find_planning_mesh(obj_name),
-            }
-        },
-        "cuboid": {
-            "table": {
-                "dims": [2, 3, 0.2],
-                "pose": [1.1, 0, -0.1 + 0.037, 1, 0, 0, 0],
-            }
-        },
-    }
+logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
+logging.getLogger("curobo").setLevel(logging.WARNING)
 
 
 def main():
@@ -150,166 +55,253 @@ def main():
     parser.add_argument("--obj", type=str, required=True)
     parser.add_argument("--grasp_version", type=str, default="selected_100")
     parser.add_argument("--exp_name", type=str, default="debug")
-    parser.add_argument("--depth", type=str, default="da3", choices=["da3", "stereo"])
+    parser.add_argument("--hand", type=str, default="allegro",
+                        choices=["allegro", "inspire", "inspire_left"])
     parser.add_argument("--scene", type=str, default="table",
                         choices=["table", "wall", "shelf", "cluttered"])
-    parser.add_argument("--hand", type=str, default="allegro", choices=["allegro", "inspire"])
+    parser.add_argument("--success_only", action="store_true")
+
+    # scene-specific args
+    parser.add_argument("--wall_gap", type=float, default=0.04)
+    parser.add_argument("--wall_angle", type=float, default=0.0)
+    parser.add_argument("--clutter_seed", type=int, default=42)
+    parser.add_argument("--clutter_min_dist", type=float, default=0.12)
+    parser.add_argument("--clutter_max_dist", type=float, default=0.20)
+    parser.add_argument("--clutter_n", type=int, default=4)
+    parser.add_argument("--shelf_width", type=float, default=0.30)
+    parser.add_argument("--shelf_depth", type=float, default=0.30)
+    parser.add_argument("--shelf_height", type=float, default=0.30)
+    parser.add_argument("--shelf_gap", type=float, default=0.02)
+    parser.add_argument("--no_shelf_back", action="store_true")
+    parser.add_argument("--no_shelf_sides", action="store_true")
+    parser.add_argument("--no_shelf_top", action="store_true")
+
+    # init pipeline args
+    parser.add_argument("--pc_list", type=str, nargs="+", default=DEFAULT_PC_LIST)
+    parser.add_argument("--port_mask", type=int, default=5006)
+    parser.add_argument("--port_pose", type=int, default=5007)
+    parser.add_argument("--port_cmd", type=int, default=6893)
+    parser.add_argument("--prompt", type=str, default="object on the checkerboard")
+    parser.add_argument("--sil_iters", type=int, default=100)
+    parser.add_argument("--sil_lr", type=float, default=0.002)
+    parser.add_argument("--init_timeout_s", type=float, default=120.0)
+    parser.add_argument("--calib_dir", type=str, default=None)
+    parser.add_argument("--stream_fps", type=int, default=10)
+    parser.add_argument("--stream_warmup_s", type=float, default=2.0)
+    parser.add_argument("--port_viser", type=int, default=8080)
     args = parser.parse_args()
 
-    obj_name = args.obj
-    exp_name = args.exp_name
-    grasp_version = args.grasp_version
+    # Mesh / assets sanity.
+    mesh_path = MESH_BASE / args.obj / "raw_mesh" / f"{args.obj}.obj"
+    assets_root = ASSETS_BASE / args.obj
+    if not mesh_path.exists():
+        sys.exit(f"mesh not found: {mesh_path}")
+    if not (assets_root / "object_repre/v1" / args.obj / "1/repre.pth").exists():
+        sys.exit(f"repre.pth missing for {args.obj}")
 
-    rcc = remote_camera_controller("test_lookup_obstacle")
+    # Calibration.
+    calib_dir = Path(args.calib_dir).expanduser() if args.calib_dir else sorted(CAM_PARAM_ROOT.iterdir())[-1]
+    print(f"calib: {calib_dir.name}")
+    intrinsics_full, extrinsics_full, H, W = _load_calib(calib_dir)
 
-    # ── 1. Perception pipeline init ──────────────────────────────────────
-    print(f"Initializing perception pipeline (obj={obj_name}, depth={args.depth})...")
-    pipeline = PerceptionPipeline(
-        sam3_hosts=SAM3_HOSTS,
-        fpose_hosts=FPOSE_HOSTS,
-        obj_name=obj_name,
-        depth_method=args.depth,
-    )
+    pc_ips = [get_pc_ip(p) for p in args.pc_list]
+    pc_serials = {p: get_camera_list(p) for p in args.pc_list}
+    active = {s for pc in args.pc_list for s in pc_serials[pc]}
+    intrinsics_full = {s: v for s, v in intrinsics_full.items() if s in active}
+    extrinsics_full = {s: v for s, v in extrinsics_full.items() if s in active}
+    print(f"  {len(intrinsics_full)} cams active across {len(args.pc_list)} PCs ({H}x{W})")
 
-    timing = {}
+    # Hardware.
+    rcc = remote_camera_controller("run_debug", pc_list=args.pc_list)
+    print(f"[stream] starting on {len(args.pc_list)} PCs @ {args.stream_fps} FPS...")
+    rcc.start("stream", False, fps=args.stream_fps)
+    if args.stream_warmup_s > 0:
+        time.sleep(args.stream_warmup_s)
 
-    def _ts():
-        return datetime.datetime.now().isoformat()
-
-    # ── 2. Capture images ────────────────────────────────────────────────
-    dir_idx = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    hand_type = args.hand
+    # Trial dir.
     scene_prefix = args.scene if args.scene != "table" else ""
-    img_dir = os.path.join(project_dir, "experiment", exp_name, scene_prefix, hand_type, obj_name, dir_idx) if scene_prefix else os.path.join(project_dir, "experiment", exp_name, hand_type, obj_name, dir_idx)
+    if args.success_only:
+        scene_prefix = f"{scene_prefix}_success_only" if scene_prefix else "success_only"
+    sub = f"{scene_prefix}/{args.hand}" if scene_prefix else args.hand
+    dir_idx = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    img_dir = os.path.join(project_dir, "experiment", args.exp_name, sub, args.obj, dir_idx)
     os.makedirs(img_dir, exist_ok=True)
-
-    print(f"[1/5] Capturing images -> {dir_idx}")
-    timing["capture_start"] = _ts()
-    t0 = time.time()
-    rcc.start("image", False, os.path.join("shared_data", "AutoDex", "experiment", exp_name, scene_prefix, hand_type, obj_name, dir_idx, "raw"))
-    rcc.stop()
     save_current_C2R(img_dir)
     save_current_camparam(img_dir)
-    timing["capture_s"] = round(time.time() - t0, 1)
-    print(f"    Capture: {timing['capture_s']}s")
 
-    # ── 3. Distributed perception ────────────────────────────────────────
-    print(f"[2/5] Perception (distributed, depth={args.depth})...")
-    timing["perception_start"] = _ts()
-    t0 = time.time()
-    pose_world, perc_timing = pipeline.run(capture_dir=img_dir)
-    timing["perception_s"] = round(time.time() - t0, 1)
-    print(f"    Perception: {timing['perception_s']}s")
+    timing: dict = {}
+    def _ts(): return datetime.datetime.now().isoformat()
 
-    if pose_world is None:
-        print("Perception failed. Exiting.")
-        timing["perception_failed"] = True
-        with open(os.path.join(img_dir, "timing.json"), "w") as f:
-            json.dump(timing, f, indent=2)
-        pipeline.close()
-        rcc.end()
-        return
+    # Init orchestrator.
+    print(f"[orch] init for {args.obj}...")
+    orch = InitOrchestrator(
+        pc_list=args.pc_list, capture_ips=pc_ips,
+        port_mask=args.port_mask, port_pose=args.port_pose, port_cmd=args.port_cmd,
+    )
+    orch.init_object(
+        obj_name=args.obj,
+        mesh_path=str(mesh_path), assets_root=str(assets_root),
+        intrinsics_full=intrinsics_full, extrinsics_full=extrinsics_full,
+        image_hw=(H, W), mode="live", pc_serials=pc_serials,
+    )
 
-    np.save(os.path.join(img_dir, "pose_world.npy"), pose_world)
-    if perc_timing:
-        timing["perception_detail"] = perc_timing
+    try:
+        # ── 1. Perception ────────────────────────────────────────────────────
+        print(f"\n[1/4] Perception (FoundPose distributed)...")
+        timing["perception_start"] = _ts()
+        t0 = time.time()
+        pose_world, perc_timing = orch.trigger_init(
+            prompt=args.prompt,
+            save_capture_dir=os.path.join(img_dir, "init_capture"),
+            sil_iters=args.sil_iters, sil_lr=args.sil_lr,
+            timeout_s=args.init_timeout_s,
+        )
+        timing["perception_s"] = round(time.time() - t0, 2)
+        if perc_timing:
+            timing["perception_detail"] = perc_timing
+        if pose_world is None:
+            reason = (perc_timing or {}).get("reason", "perception_failed")
+            print(f"    Perception FAILED ({reason})")
+            with open(os.path.join(img_dir, "timing.json"), "w") as f:
+                json.dump(timing, f, indent=2, default=str)
+            return
+        print(f"    Perception: {timing['perception_s']}s")
+        np.save(os.path.join(img_dir, "pose_world.npy"), pose_world)
 
-    # ── 4. Plan ──────────────────────────────────────────────────────────
-    print(f"[3/5] Planning (version={grasp_version})...")
-    timing["planning_start"] = _ts()
-    t0 = time.time()
-    c2r = load_c2r(img_dir)
-    scene_cfg = pose_world_to_scene_cfg(pose_world, c2r, obj_name)
-    scene_cfg = add_obstacles(scene_cfg, args.scene)
-    planner = GraspPlanner(hand=args.hand)
-    result = planner.plan(scene_cfg, obj_name, grasp_version, hand=args.hand)
-    timing["planning_s"] = round(time.time() - t0, 1)
-    print(f"    Planning: {timing['planning_s']}s  success={result.success}")
+        # ── 2. Planning ──────────────────────────────────────────────────────
+        print(f"[2/4] Planning (version={args.grasp_version}, scene={args.scene})...")
+        timing["planning_start"] = _ts()
+        t0 = time.time()
+        c2r = load_c2r(img_dir)
+        scene_cfg = pose_world_to_scene_cfg(pose_world, c2r, args.obj)
+        scene_cfg = add_obstacles(
+            scene_cfg, args.scene,
+            wall_gap=args.wall_gap, wall_angle=args.wall_angle,
+            seed=args.clutter_seed,
+            clutter_min_dist=args.clutter_min_dist,
+            clutter_max_dist=args.clutter_max_dist,
+            clutter_n=args.clutter_n,
+            shelf_width=args.shelf_width, shelf_depth=args.shelf_depth,
+            shelf_height=args.shelf_height, shelf_gap=args.shelf_gap,
+            shelf_back=not args.no_shelf_back,
+            shelf_sides=not args.no_shelf_sides,
+            shelf_top=not args.no_shelf_top,
+        )
+        planner = GraspPlanner(hand=args.hand)
+        result = planner.plan(
+            scene_cfg, args.obj, args.grasp_version,
+            skip_done=(args.scene == "table"),
+            success_only=args.success_only, hand=args.hand,
+        )
+        timing["plan_s"] = round(time.time() - t0, 2)
+        print(f"    Plan: {timing['plan_s']}s  success={result.success}")
 
-    if not result.success:
-        print("No valid trajectory found. Exiting.")
-        timing["planning_success"] = False
-        with open(os.path.join(img_dir, "timing.json"), "w") as f:
-            json.dump(timing, f, indent=2)
-        pipeline.close()
-        rcc.end()
-        return
+        if not result.success:
+            print("    Planning FAILED — launching visualizer with candidates...")
+            wrist_se3, _, grasp_pose, filtered = planner.get_candidates(
+                scene_cfg, args.obj, args.grasp_version,
+                success_only=args.success_only,
+                skip_done=(args.scene == "table"), hand=args.hand,
+            )
+            fv = ScenePlanVisualizer(scene_cfg, None, port=args.port_viser, hand=args.hand)
+            fv.add_candidates(wrist_se3, grasp_pose, filtered)
+            fv.start_viewer(use_thread=False)  # blocks
+            return
 
-    timing["planning_success"] = True
-    if result.timing:
-        timing["planning_detail"] = result.timing
+        plan_dir = os.path.join(img_dir, "plan")
+        os.makedirs(plan_dir, exist_ok=True)
+        np.save(os.path.join(plan_dir, "traj.npy"), result.traj)
+        np.save(os.path.join(plan_dir, "wrist_se3.npy"), result.wrist_se3)
+        np.save(os.path.join(plan_dir, "pregrasp_pose.npy"), result.pregrasp_pose)
+        np.save(os.path.join(plan_dir, "grasp_pose.npy"), result.grasp_pose)
+        if result.timing:
+            with open(os.path.join(plan_dir, "timing.json"), "w") as f:
+                json.dump(result.timing, f, indent=2)
+        print(f"    Scene info: {result.scene_info}")
 
-    # Save plan
-    plan_dir = os.path.join(img_dir, "plan")
-    os.makedirs(plan_dir, exist_ok=True)
-    np.save(os.path.join(plan_dir, "traj.npy"), result.traj)
-    np.save(os.path.join(plan_dir, "wrist_se3.npy"), result.wrist_se3)
-    np.save(os.path.join(plan_dir, "pregrasp_pose.npy"), result.pregrasp_pose)
-    np.save(os.path.join(plan_dir, "grasp_pose.npy"), result.grasp_pose)
-    print(f"    Scene info: {result.scene_info}")
+        # ── 3. Viser preview ─────────────────────────────────────────────────
+        print(f"[3/4] Viser preview (http://localhost:{args.port_viser})...")
+        vis = ScenePlanVisualizer(scene_cfg, result, port=args.port_viser, hand=args.hand)
+        # Also overlay all candidates (red = filtered, green = valid) so we can
+        # scrub through them with the "Candidate #" slider.
+        cand_wrist, _, cand_grasp, cand_filtered = planner.get_candidates(
+            scene_cfg, args.obj, args.grasp_version,
+            success_only=args.success_only,
+            skip_done=(args.scene == "table"), hand=args.hand,
+        )
+        vis.add_candidates(cand_wrist, cand_grasp, cand_filtered)
+        vis.start_viewer(use_thread=True)
+        chime.info()
 
-    # ── 5. Visualize scene + trajectory ──────────────────────────────────
-    print(f"[4/5] Launching scene visualizer (http://localhost:8080)...")
-    vis = ScenePlanVisualizer(scene_cfg, result, port=8080, hand=args.hand)
-    vis.start_viewer(use_thread=True)
+        while True:
+            ans = input("Press 'y' to execute on robot (GUI), 'q' to skip: ").strip().lower()
+            if ans in ("y", "q"):
+                break
+        if ans == "q":
+            print("Skipping execution.")
+            with open(os.path.join(img_dir, "timing.json"), "w") as f:
+                json.dump(timing, f, indent=2, default=str)
+            return
 
-    while True:
-        cont = input("Press 'y' to execute on robot, 'q' to quit: ").strip().lower()
-        if cont in ("y", "q"):
-            break
+        # ── 4. Execute ───────────────────────────────────────────────────────
+        print(f"[4/4] Executing...")
+        timing["execution_start"] = _ts()
+        executor = RealExecutor(hand_name=args.hand)
+        s_hand = executor.execute(result)         # grasp + lift (object held up)
 
-    if cont == "q":
-        print("Skipping execution.")
-        with open(os.path.join(img_dir, "timing.json"), "w") as f:
-            json.dump(timing, f, indent=2)
-        pipeline.close()
-        rcc.end()
-        return
+        # ↓ Label image capture goes here — object lifted, table area exposed.
+        # (auto-label via charuco visibility is a follow-up; for now, manual label.)
 
-    # ── 6. GUI Controller ────────────────────────────────────────────────
-    print(f"[5/5] Launching GUI controller...")
-    timing["execution_start"] = _ts()
+        place_info = executor.place(
+            result,
+            log_path=os.path.join(img_dir, "place_mcc_log.csv"),
+        )
+        timing["execution_states"] = executor.state_timestamps
+        timing["place"] = place_info
 
-    from autodex.executor.real import RealExecutor
-    executor = RealExecutor(mode="gui", hand_name=args.hand)
-    s_hand = executor.execute(result)
-    timing["execution_states"] = executor.state_timestamps
+        # Label.
+        while True:
+            label = input("Success? [y/n]: ").strip().lower()
+            if label in ("y", "n"):
+                break
 
-    # ── Label ────────────────────────────────────────────────────────────
-    while True:
-        label = input("Success? (y/n): ").strip().lower()
-        if label in ("y", "n"):
-            break
+        executor.release(result)
+        if s_hand is not None:
+            np.save(os.path.join(img_dir, "squeeze_hand.npy"), s_hand)
 
-    timing["label_start"] = _ts()
+        trial_result = {
+            "dir_idx": dir_idx,
+            "scene_type": args.scene,
+            "success": (label == "y"),
+            "scene_info": result.scene_info,
+            "candidate_idx": result.timing.get("candidate_idx") if result.timing else None,
+            "timing": timing,
+        }
+        with open(os.path.join(img_dir, "result.json"), "w") as f:
+            json.dump(trial_result, f, indent=2, default=str)
 
-    # Release & return to init
-    executor.release(result)
+        if result.scene_info is not None and args.scene == "table":
+            from autodex.utils.path import get_candidate_path
+            sei = result.scene_info
+            cand_result_path = os.path.join(
+                get_candidate_path(args.hand), args.grasp_version, args.obj,
+                sei[0], sei[1], sei[2], "result.json",
+            )
+            with open(cand_result_path, "w") as f:
+                json.dump({"success": label == "y", "dir_idx": dir_idx}, f)
 
-    if s_hand is not None:
-        np.save(os.path.join(img_dir, "squeeze_hand.npy"), s_hand)
-
-    trial_result = {
-        "scene_info": result.scene_info,
-        "success": label == "y",
-        "timing": timing,
-    }
-    with open(os.path.join(img_dir, "result.json"), "w") as f:
-        json.dump(trial_result, f, indent=2)
-
-    # Save result to candidate path (table only — other scenes are testing)
-    if result.scene_info is not None and args.scene == "table":
-        from autodex.utils.path import get_candidate_path
-        sei = result.scene_info
-        cand_result_path = os.path.join(get_candidate_path(args.hand), grasp_version, obj_name, sei[0], sei[1], sei[2], "result.json")
-        with open(cand_result_path, "w") as f:
-            json.dump({"success": label == "y", "dir_idx": dir_idx}, f)
-
-    print(f"Result saved to {img_dir}/result.json")
-
-    executor.shutdown()
-    pipeline.close()
-    rcc.end()
+        print(f"Result saved to {img_dir}/result.json")
+        executor.shutdown()
+    finally:
+        try:
+            orch.close()
+        except Exception:
+            pass
+        for fn in (rcc.stop, rcc.end):
+            try:
+                fn()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

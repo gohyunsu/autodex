@@ -23,7 +23,7 @@ from autodex.utils.path import robot_configs_path, load_candidate
 from autodex.utils.conversion import se32action, cart2se3
 from autodex.utils.robot_config import (
     INIT_STATE, XARM_INIT, INSPIRE_INIT,
-    ALLEGRO_LINK6_TO_WRIST, INSPIRE_LINK6_TO_WRIST,
+    ALLEGRO_LINK6_TO_WRIST, INSPIRE_LINK6_TO_WRIST, INSPIRE_LEFT_LINK6_TO_WRIST,
 )
 
 

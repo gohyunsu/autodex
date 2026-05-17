@@ -295,7 +295,34 @@ class GoTrackTracker:
                 })
 
         if not observations_by_anchor:
+            n_payloads = len(payloads)
+            sel_sums = {s: int(np.asarray(p.get("selected_mask")).sum())
+                        if p.get("selected_mask") is not None else -1
+                        for s, p in payloads.items()}
+            logger.warning(f"[fuse] no_observations: n_payloads={n_payloads} "
+                           f"selected_mask_sums={sel_sums}")
             return None, {"reason": "no_observations"}
+
+        # Diagnostic: how many anchors are seen by multiple cameras?
+        n_anchors = len(observations_by_anchor)
+        view_counts = [len(v) for v in observations_by_anchor.values()]
+        n_multi = sum(1 for c in view_counts if c >= 2)
+        if n_multi == 0:
+            # Sample anchor_ids per cam to verify they're canonical bank indices.
+            per_cam_sample = {}
+            for s, p in payloads.items():
+                aids = p.get("anchor_ids")
+                sel = p.get("selected_mask")
+                if aids is not None and sel is not None:
+                    sel_ids = np.asarray(aids)[np.asarray(sel, dtype=bool)]
+                    per_cam_sample[s] = (int(sel_ids.size),
+                                          sel_ids[:5].tolist() if sel_ids.size else [],
+                                          int(sel_ids.min()) if sel_ids.size else -1,
+                                          int(sel_ids.max()) if sel_ids.size else -1)
+            logger.warning(f"[fuse] no anchors seen by ≥2 cams: "
+                           f"n_anchors={n_anchors} max_views_per_anchor={max(view_counts)} "
+                           f"n_payloads={len(payloads)}")
+            logger.warning(f"[fuse]   per-cam (n_selected, first5_ids, min, max): {per_cam_sample}")
 
         tri = triangulate_anchor_observations(
             observations_by_anchor=observations_by_anchor,
@@ -311,6 +338,7 @@ class GoTrackTracker:
             return None, {"reason": "triangulation_empty", "tri": tri}
 
         # Optional residual filter.
+        residuals_pre = [r.get("max_residual_mm", -1) for r in records]
         if self.max_triangulation_residual_mm > 0.0:
             keep = []
             for r in records:
@@ -319,24 +347,33 @@ class GoTrackTracker:
                     keep.append(r)
             records = keep
         if not records:
-            return None, {"reason": "all_filtered_by_residual"}
+            import numpy as _np
+            arr = _np.asarray(residuals_pre, dtype=float)
+            logger.warning(
+                f"[fuse] all_filtered_by_residual  n_pre={len(residuals_pre)}  "
+                f"min={arr.min():.2f}mm  median={_np.median(arr):.2f}mm  "
+                f"max={arr.max():.2f}mm  thresh={self.max_triangulation_residual_mm:.2f}mm")
+            return None, {"reason": "all_filtered_by_residual", "residuals_mm": residuals_pre}
 
         weights = build_fit_weights_from_triangulation_records(
             records,
             mode="geometry",
-            params={},
         )
+        source_points_o = np.asarray([r["position_o"] for r in records], dtype=np.float32)
+        target_points_w = np.asarray([r["position_w"] for r in records], dtype=np.float32)
         fit = robust_fit_pose_from_anchors(
-            triangulation_records=records,
+            source_points_o,
+            target_points_w,
+            weights,
             inlier_threshold_mm=self.kabsch_inlier_thresh_mm,
-            weights=weights,
+            external_unit_scale_to_meter=self.external_unit_scale_to_meter,
         )
-        pose_world = fit.get("pose_world")
+        pose_world = fit.get("pose_world_from_object")
         if pose_world is None:
             return None, {"reason": "fit_failed", "fit": fit}
         return np.asarray(pose_world, dtype=np.float64), {
             "n_triangulated": len(records),
-            "n_inliers": int(fit.get("num_inliers", 0)),
+            "n_inliers": int(fit.get("num_inlier_anchors", 0)),
             "mean_residual_mm": float(fit.get("mean_residual_mm", -1)),
             "fit": fit,
         }
@@ -346,16 +383,28 @@ class GoTrackTracker:
     ) -> Iterator[Tuple[int, np.ndarray, Dict[str, Any]]]:
         """Generator: yield (frame_id, pose_world, info) every frame."""
         # Send initial prior so daemons can start processing.
-        self.publish_prior(init_pose_world, frame_id=-1)
+        # Burst-publish to defeat ZMQ slow-joiner: SUBs that connect before the
+        # PUB binds (e.g. daemons) miss messages sent at startup. CONFLATE=1
+        # on the subscriber side means only the latest survives, so it's safe
+        # to spam.
+        for _ in range(20):
+            self.publish_prior(init_pose_world, frame_id=-1)
+            time.sleep(0.02)
         prev_pose = init_pose_world.astype(np.float64).copy()
         with self._status_lock:
             self.status["init_done"] = True
             self.status["init_ts"] = time.time()
             self.status["current_pose"] = prev_pose.tolist()
 
+        last_idle_republish = time.time()
         while not self._stop.is_set():
             ready = self.sync_buffer.pop_ready()
             if ready is None:
+                # While idle waiting for first obs, keep republishing the prior
+                # every 0.5s in case daemons missed earlier broadcasts.
+                if time.time() - last_idle_republish > 0.5:
+                    self.publish_prior(prev_pose, frame_id=-1)
+                    last_idle_republish = time.time()
                 time.sleep(0.005)
                 continue
             frame_id, payloads = ready
@@ -372,6 +421,16 @@ class GoTrackTracker:
                 if dt > 0:
                     fps = (len(self._fps_window) - 1) / dt
             with self._status_lock:
+                counts = self.status.setdefault("counts", {
+                    "received": 0, "success": 0,
+                    "fail_by_reason": {},
+                })
+                counts["received"] += 1
+                if pose_world is not None:
+                    counts["success"] += 1
+                else:
+                    reason = str(info.get("reason", "unknown"))
+                    counts["fail_by_reason"][reason] = counts["fail_by_reason"].get(reason, 0) + 1
                 self.status["frame_id"] = int(frame_id)
                 self.status["fps"] = float(fps)
                 self.status["last_fit_ok"] = pose_world is not None

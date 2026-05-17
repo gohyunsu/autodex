@@ -8,7 +8,7 @@
 #     bash scripts/init_daemons.sh log capture1   # tail one PC's log
 set -euo pipefail
 
-PCS=(capture1 capture2 capture3 capture4 capture5 capture6)
+PCS=(capture1 capture2 capture3 capture5 capture6)  # capture4 out
 # Resolved on the REMOTE side via $HOME — do NOT expand ~ locally.
 PY='$HOME/anaconda3/envs/gotrack_cu128/bin/python'
 DAEMON='$HOME/AutoDex/src/execution/daemon/init_daemon.py'

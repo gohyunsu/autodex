@@ -148,7 +148,6 @@ class GoTrackDaemon:
 
     def _do_init(self) -> None:
         """Build GoTrackEngine from init payload sent by robot PC."""
-        import cv2  # noqa: F401
         from autodex.perception.gotrack_engine import GoTrackEngine, CameraIntrinsics
         info = self.cmd_receiver.event_info.get("init", {}) or {}
 
@@ -156,20 +155,13 @@ class GoTrackDaemon:
         anchor_bank_path = info["anchor_bank_path"]
         object_id = int(info.get("object_id", 1))
         object_name = info.get("object_name", "object")
-        all_intrinsics = info["intrinsics"]   # {serial: {K (3x3), width, height} or with K_orig/K_undist/dist_params}
+        all_intrinsics = info["intrinsics"]   # {serial: {K (3x3), width, height}}
         all_extrinsics = info["extrinsics"]   # {serial: 4x4 world->cam}
 
         # Init MultiCameraReader for THIS PC's cameras.
         self.reader = MultiCameraReader()
         my_serials = list(self.reader.camera_names)
         logger.info(f"[init] this PC has {len(my_serials)} cameras: {my_serials}")
-
-        # Build undistort maps so we can rectify SHM frames before feeding the
-        # engine (which uses K_undist). Without this, only the cam whose object
-        # happens to be near the image center survives — others fail because of
-        # the distortion mismatch between raw image and K_undist.
-        import cv2 as _cv2
-        self.undistort_maps = {}
 
         cameras: List[CameraIntrinsics] = []
         for s in my_serials:
@@ -181,25 +173,13 @@ class GoTrackDaemon:
             ext = ext.reshape(3, 4) if ext.size == 12 else ext.reshape(4, 4)
             if ext.shape == (3, 4):
                 ext = np.vstack([ext, [0, 0, 0, 1]])
-            # K is K_undist (intrinsics_undistort) — engine works in undistorted space.
-            K_undist = np.asarray(intr["K"], dtype=np.float64).reshape(3, 3)
-            w, h = int(intr["width"]), int(intr["height"])
             cameras.append(CameraIntrinsics(
-                serial=s, K=K_undist, extrinsic_cw=ext, width=w, height=h,
+                serial=s,
+                K=np.asarray(intr["K"], dtype=np.float64).reshape(3, 3),
+                extrinsic_cw=ext,
+                width=int(intr["width"]),
+                height=int(intr["height"]),
             ))
-            # If K_orig + dist available, precompute undistort map.
-            K_orig = intr.get("K_orig")
-            dist = intr.get("dist_params")
-            if K_orig is not None and dist is not None:
-                K_orig = np.asarray(K_orig, dtype=np.float64).reshape(3, 3)
-                dist = np.asarray(dist, dtype=np.float64).reshape(-1)
-                mapx, mapy = _cv2.initUndistortRectifyMap(
-                    K_orig, dist, None, K_undist, (w, h), _cv2.CV_16SC2)
-                self.undistort_maps[s] = (mapx, mapy)
-            else:
-                self.undistort_maps[s] = None  # raw frame passed as-is
-                logger.warning(f"[init] {s}: no K_orig+dist_params, skipping undistort "
-                               "(anchor projection may be off)")
         if not cameras:
             raise RuntimeError("No cameras with calibration on this PC")
 
@@ -224,83 +204,40 @@ class GoTrackDaemon:
             logger.error("[loop] not initialized")
             return
 
-        logger.info(f"[loop] entry: stop_event={self.stop_event.is_set()} "
-                    f"exit_event={self.exit_event.is_set()}")
-        # Defensive: clear stop_event left over from a prior session before we
-        # enter the polling loop. Without this, a stale stop from the previous
-        # run kills this run before it starts.
-        if self.stop_event.is_set():
-            logger.warning("[loop] stop_event was set at entry; clearing")
-            self.stop_event.clear()
-
-        # Pick up the trial_ts the robot PC sent with the start command, so
-        # this trial's crops land under .../{obj}/{trial_ts}/{fid}/ and don't
-        # collide with prior trials.
-        start_info = self.cmd_receiver.event_info.get("start", {}) or {}
-        trial_ts = str(start_info.get("trial_ts", "")) or None
-        self.engine.set_trial_ts(trial_ts)
-
         my_serials = list(self.engine.cameras.keys())
         last_frame_ids = {s: 0 for s in my_serials}
         last_published_frame_id: Optional[int] = None
-        n_published = 0
-        n_skipped_frames = 0
-        n_skipped_no_prior = 0
-        last_log_t = time.perf_counter()
 
         while not self.stop_event.is_set() and not self.exit_event.is_set():
-            now = time.perf_counter()
-            if now - last_log_t > 2.0:
-                logger.info(f"[loop] published={n_published}  "
-                            f"skipped_frames={n_skipped_frames}  "
-                            f"skipped_no_prior={n_skipped_no_prior}  "
-                            f"last_fid={last_frame_ids}")
-                last_log_t = now
-
-            # 1. Pull latest frames from SHM, undistort to match K_undist that
-            #    the engine uses. Dedupe at the frame_id level via
-            #    last_published_frame_id below.
-            import cv2 as _cv2
+            # 1. Pull latest frames from SHM.
             images_data = self.reader.get_images(copy=True)
             frames_bgr: Dict[str, np.ndarray] = {}
             min_frame_id: Optional[int] = None
             for s in my_serials:
                 img, fid = images_data.get(s, (None, 0))
-                if img is None or fid <= 0:
+                if img is None or fid <= last_frame_ids[s] or fid <= 0:
                     continue
-                maps = self.undistort_maps.get(s) if hasattr(self, "undistort_maps") else None
-                if maps is not None:
-                    img = _cv2.remap(img, maps[0], maps[1], _cv2.INTER_LINEAR)
                 frames_bgr[s] = img
                 last_frame_ids[s] = fid
                 min_frame_id = fid if min_frame_id is None else min(min_frame_id, fid)
 
-            # Need all cams to have at least some valid frame.
+            # Need all cams synced; if any cam missing this iteration, wait.
             if len(frames_bgr) != len(my_serials):
-                n_skipped_frames += 1
                 time.sleep(0.005)
                 continue
             if min_frame_id == last_published_frame_id:
-                time.sleep(0.005)
                 continue
 
             # 2. Get latest prior pose. Skip if none yet (robot PC hasn't sent
             #    init pose).
             prior = self.prior_sub.get_latest()
             if "pose_world" not in prior:
-                n_skipped_no_prior += 1
                 time.sleep(0.01)
                 continue
             prior_pose = np.asarray(prior["pose_world"], dtype=np.float64).reshape(4, 4)
             prior_frame_id = int(prior.get("frame_id", -1))
 
             # 3. Run GoTrackEngine.
-            # diag: frames_bgr stats per cam (right before engine)
-            if n_published < 3:
-                for _s, _img in frames_bgr.items():
-                    logger.info(f"[diag-frame] {_s}: shape={_img.shape} dtype={_img.dtype} "
-                                f"mean={float(_img.mean()):.2f} std={float(_img.std()):.2f} "
-                                f"nonzero={int((_img != 0).sum())}/{_img.size}")
             t0 = time.perf_counter()
             try:
                 per_cam = self.engine.process_frame(
@@ -308,7 +245,6 @@ class GoTrackDaemon:
                     frames_bgr=frames_bgr,
                     masks=None,
                     frame_index=int(min_frame_id),
-                    include_debug_images=True,
                 )
             except Exception as exc:
                 logger.exception(f"[loop] engine error: {exc}")
@@ -342,7 +278,6 @@ class GoTrackDaemon:
             if meta_items:
                 self.publisher.send_data(meta_items, binaries)
                 last_published_frame_id = min_frame_id
-                n_published += 1
 
     def run(self) -> None:
         logger.info("[daemon] waiting for /init from robot PC")
@@ -361,39 +296,10 @@ class GoTrackDaemon:
                 self._process_loop()
                 logger.info("[daemon] process loop stopped")
                 self.stop_event.clear()
-                # Background rsync local debug crops → NAS. Local writes are
-                # fast and don't block engine; the upload runs after the run
-                # ends so it doesn't affect tracking latency.
-                self._upload_debug_crops()
 
             time.sleep(0.05)
 
         logger.info("[daemon] exit")
-
-    def _upload_debug_crops(self) -> None:
-        """rsync local /tmp/gotrack_crops/ to NAS, then wipe local."""
-        import os, shutil, subprocess, threading
-        local_root = "/tmp/gotrack_crops"
-        if not os.path.isdir(local_root):
-            return
-        nas_root = os.path.expanduser("~/shared_data/AutoDex/debug/gotrack_crops")
-        os.makedirs(nas_root, exist_ok=True)
-
-        def _do_upload():
-            try:
-                logger.info(f"[diag-crops] uploading {local_root} → {nas_root}")
-                subprocess.run(
-                    ["rsync", "-rt", "--no-owner", "--no-group", "--remove-source-files",
-                     f"{local_root}/", f"{nas_root}/"],
-                    check=False,
-                )
-                # Remove empty dirs after --remove-source-files leaves them.
-                shutil.rmtree(local_root, ignore_errors=True)
-                logger.info("[diag-crops] upload complete")
-            except Exception as exc:
-                logger.warning(f"[diag-crops] upload failed: {exc}")
-
-        threading.Thread(target=_do_upload, daemon=True).start()
 
     def close(self) -> None:
         self.exit_event.set()
@@ -412,7 +318,7 @@ def main():
                         help="ZMQ SUB port for prior pose (robot→capture)")
     parser.add_argument("--port-cmd", type=int, default=6892,
                         help="CommandReceiver port for init/start/stop")
-    parser.add_argument("--robot-ip", type=str, default="192.168.0.2",
+    parser.add_argument("--robot-ip", type=str, default="192.168.0.100",
                         help="Robot PC IP for prior_pose SUB")
     args = parser.parse_args()
 

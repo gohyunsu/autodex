@@ -62,7 +62,7 @@ def precompute_synced_qpos(exp_dir, hand_type,
 
     Args:
         exp_dir: experiment dir containing raw/.
-        hand_type: "allegro" or "inspire".
+        hand_type: "allegro", "inspire", or "inspire_left".
         overwrite: re-compute even if synced files exist.
 
     Returns:
@@ -103,7 +103,7 @@ def precompute_synced_qpos(exp_dir, hand_type,
     hand_state = resample(hand_time, hand_pos, video_times)
     hand_action = resample(hand_time, hand_action_raw, video_times)
 
-    if hand_type == "inspire":
+    if hand_type in ("inspire", "inspire_left"):
         hand_state = convert_inspire_raw(hand_state)
         hand_action = convert_inspire_raw(hand_action)
     elif hand_type == "allegro":

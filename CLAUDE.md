@@ -272,12 +272,27 @@ Key reference files:
 
 ## Daemon Setup (Perception Pipeline)
 
-> **Distributed tracking pipeline (FoundPose init + GoTrack tracking)**
-> See [docs/distributed_tracking.md](docs/distributed_tracking.md). Replaces
-> the daemon setup below with: FoundPose centralized on robot PC for init,
-> GoTrack mask-free distributed across capture1-6 for per-frame tracking.
+### Current pipeline (FoundPose init only)
 
-### Architecture
+`src/execution/run_auto.py` uses **`init_daemon`** on capture1-3, 5, 6 (gotrack_cu128 env).
+Start/stop/status are all wrapped by `scripts/init_daemons.sh`:
+
+```bash
+bash scripts/init_daemons.sh start
+bash scripts/init_daemons.sh status
+bash scripts/init_daemons.sh stop
+bash scripts/init_daemons.sh log capture1   # tail one PC's log
+```
+
+Daemon code: `src/execution/daemon/init_daemon.py`. Ports: 5006 (mask PUB),
+5007 (pose PUB), 6893 (control). Orchestrator: `autodex.perception.init_orchestrator.InitOrchestrator`.
+
+### Legacy SAM3+FPose daemon setup (for `src/execution_prev/`)
+
+Only needed when running the old `src/execution_prev/run_auto.py` / `run_debug.py` /
+`run_demo.py`. The new pipeline does not use these.
+
+### Architecture (legacy)
 
 - **Main PC** (mingi, RTX 3090): DA3/stereo depth + silhouette matching + planning
 - **capture1, 2, 3**: SAM3 daemons (ZMQ, port 5001)
@@ -299,7 +314,7 @@ cp ~/shared_data/AutoDex/weights/foundationpose/mycpp_build/mycpp*.so \
    ~/AutoDex/autodex/perception/thirdparty/FoundationPose/mycpp/build/
 ```
 
-### SAM3 daemon (capture1, 2, 3)
+### SAM3 daemon (capture1, 2, 3) — legacy
 
 ```bash
 # Conda env setup (once)
@@ -312,10 +327,10 @@ python -c "from huggingface_hub import login; login(token='<HF_TOKEN>')"
 # Run daemon
 conda activate sam3
 cd ~/AutoDex
-python src/execution/daemon/perception_daemon.py --model sam3 --port 5001
+python src/execution_prev/daemon/perception_daemon.py --model sam3 --port 5001
 ```
 
-### FPose daemon (capture4, 5, 6)
+### FPose daemon (capture4, 5, 6) — legacy
 
 ```bash
 # Conda env setup (once)
@@ -328,7 +343,7 @@ pip install "git+https://github.com/facebookresearch/pytorch3d.git" --no-build-i
 # Run daemon
 conda activate foundationpose
 cd ~/AutoDex
-python src/execution/daemon/perception_daemon.py --model fpose --port 5003 \
+python src/execution_prev/daemon/perception_daemon.py --model fpose --port 5003 \
     --mesh ~/shared_data/object_6d/data/mesh/attached_container/attached_container.obj
 ```
 
@@ -355,24 +370,24 @@ cd ~/AutoDex && git fetch origin && git reset --hard origin/main
     └── mobileclip2_b.ts       # MobileCLIP (243MB)
 ```
 
-### Quick Start: Run Perception Pipeline
+### Quick Start: Run Legacy Perception Pipeline (`src/execution_prev/`)
 
 ```bash
 # 1. Start SAM3 daemons (capture1, 2, 3)
-ssh capture1 "cd ~/AutoDex && conda activate sam3 && python src/execution/daemon/perception_daemon.py --model sam3 --port 5001"
-ssh capture2 "cd ~/AutoDex && conda activate sam3 && python src/execution/daemon/perception_daemon.py --model sam3 --port 5001"
-ssh capture3 "cd ~/AutoDex && conda activate sam3 && python src/execution/daemon/perception_daemon.py --model sam3 --port 5001"
+ssh capture1 "cd ~/AutoDex && conda activate sam3 && python src/execution_prev/daemon/perception_daemon.py --model sam3 --port 5001"
+ssh capture2 "cd ~/AutoDex && conda activate sam3 && python src/execution_prev/daemon/perception_daemon.py --model sam3 --port 5001"
+ssh capture3 "cd ~/AutoDex && conda activate sam3 && python src/execution_prev/daemon/perception_daemon.py --model sam3 --port 5001"
 
 # 2. Start FPose daemons (capture4, 5, 6)
-ssh capture4 "cd ~/AutoDex && conda activate foundationpose && python src/execution/daemon/perception_daemon.py --model fpose --port 5003"
-ssh capture5 "cd ~/AutoDex && conda activate foundationpose && python src/execution/daemon/perception_daemon.py --model fpose --port 5003"
-ssh capture6 "cd ~/AutoDex && conda activate foundationpose && python src/execution/daemon/perception_daemon.py --model fpose --port 5003"
+ssh capture4 "cd ~/AutoDex && conda activate foundationpose && python src/execution_prev/daemon/perception_daemon.py --model fpose --port 5003"
+ssh capture5 "cd ~/AutoDex && conda activate foundationpose && python src/execution_prev/daemon/perception_daemon.py --model fpose --port 5003"
+ssh capture6 "cd ~/AutoDex && conda activate foundationpose && python src/execution_prev/daemon/perception_daemon.py --model fpose --port 5003"
 
 # 3. Run pipeline (robot PC)
 ssh robot
 conda activate autodex
 cd ~/AutoDex
-python src/execution/run_perception.py \
+python src/execution_prev/run_perception.py \
     --capture_dir ~/shared_data/mingi_object_test/attached_container/20260317_172712 \
     --obj attached_container --depth da3
 ```
@@ -389,6 +404,31 @@ Output: `~/AutoDex/candidates/{hand}/v3_order/{obj}/setcover_order.json`
 
 ## Execution Pipeline (`src/execution/`)
 
+The current pipeline runs **FoundPose distributed init** (`InitOrchestrator` →
+capture1-3,5,6 `init_daemon`) for perception, then planning + execute on the robot.
+GoTrack tracking is **out of scope** here — perception is init-only, one shot per trial.
+
+The legacy SAM3+FPose distributed pipeline (with its own `perception_pipeline.py` +
+`perception_daemon.py` + `gotrack_daemon.py`) lives under `src/execution_prev/` for
+reference. Its imports were rewritten (`src.execution.*` → `src.execution_prev.*`) so
+it can still run side-by-side if needed.
+
+```
+src/execution/
+├── run_auto.py        # automated FoundPose init → plan → execute → label loop
+├── scene_cfg.py       # pose_world → planner scene_cfg (cylinder/sphere snap, table cuboid)
+├── label.py           # human-in-the-loop trial label prompt
+└── daemon/
+    └── init_daemon.py # runs on capture PCs (gotrack_cu128 env)
+```
+
+### Prerequisites
+
+```bash
+bash scripts/init_daemons.sh start    # launches init_daemon on capture1-3, 5, 6
+bash scripts/init_daemons.sh status   # expect "1" per PC
+```
+
 ### run_auto.py — Automated grasp evaluation loop
 
 ```bash
@@ -402,14 +442,37 @@ python src/execution/run_auto.py --obj brown_ramen --success_only
 python src/execution/run_auto.py --obj brown_ramen --scene wall --wall_angle 0 --wall_gap 0.04 --success_only
 python src/execution/run_auto.py --obj brown_ramen --scene shelf --success_only
 python src/execution/run_auto.py --obj brown_ramen --scene cluttered --clutter_seed 42 --clutter_min_dist 0.12 --success_only
-python src/execution/run_auto.py --obj brown_ramen --viz  # launch viser visualizer
+python src/execution/run_auto.py --obj brown_ramen --viz                # launch viser visualizer
+python src/execution/run_auto.py --obj brown_ramen --hand inspire_left  # left inspire hand
 ```
 
-### run_debug.py — Manual step-through with GUI controller
+`--hand` accepts `allegro` (default), `inspire`, `inspire_left`. The
+`inspire_left` hand uses `xarm_inspire_left.yml` (copied into
+`~/shared_data/AutoDex/content/configs/robot/` from `~/mcc_minimal/`).
+
+Each trial keeps the capture-PC stream running for init pipeline SHM access; it is
+toggled off → video recording → back on around the executor's execute window.
+
+### run_debug.py — Single trial, viser preview, GUI executor
+
+Same init pipeline as `run_auto.py`, but stops at the visualizer after planning
+so you can inspect the trajectory before committing. If you press `y` the
+trajectory runs through `RealExecutor(mode="gui")` (step-through GUI); `q`
+skips execution. Single trial only. No video / sync_generator / timestamp_monitor
+— stream stays on the whole time for the init pipeline. Saves to
+`~/shared_data/AutoDex/experiment/debug/...` by default (`--exp_name`).
 
 ```bash
-python src/execution/run_debug.py --obj wood_organizer
+python src/execution/run_debug.py --obj attached_container
+python src/execution/run_debug.py --obj brown_ramen --hand inspire_left
+python src/execution/run_debug.py --obj brown_ramen --scene wall --wall_angle 0
 ```
+
+### Legacy `src/execution_prev/`
+
+`run_auto.py`, `run_debug.py`, `run_demo.py`, `run_perception.py` from the old
+SAM3+FPose pipeline still live there. They need the legacy daemons (see Daemon
+Setup below).
 
 ### Key Design Decisions
 
@@ -420,7 +483,7 @@ python src/execution/run_debug.py --obj wood_organizer
 - **Sil loss threshold**: Perception returns None if silhouette matching loss > 0.003 (unreliable pose).
 - **IK retract_config**: IK solver uses `retract_config=INIT_STATE` so joint solutions stay near start configuration. Fixes joint 6 wrapping issue (IK returning values in [-2π, 2π]).
 - **Trajectory smoothing**: Uses `get_interpolated_plan()` instead of raw `optimized_plan` (64 waypoints → dense interpolated trajectory). Allegro uses CUBIC interpolation (jerk minimization), Inspire uses LINEAR_CUDA. Changed 2026-04-03 — raw optimized_plan had jerky motion.
-- **Per-hand planner config**: `GraspPlanner(hand=)` selects YAML configs, collision_activation_distance, num_trajopt_seeds, and interpolation_type per hand. Allegro: `xarm_allegro.yml`, act_dist=0.01, 32 seeds, CUBIC. Inspire: `xarm_inspire.yml`, act_dist=0.002, 32 seeds, LINEAR_CUDA.
+- **Per-hand planner config**: `GraspPlanner(hand=)` selects YAML configs, collision_activation_distance, num_trajopt_seeds, and interpolation_type per hand. Allegro: `xarm_allegro.yml`, act_dist=0.01, 32 seeds, CUBIC. Inspire (right): `xarm_inspire.yml`, act_dist=0.002, 32 seeds, LINEAR_CUDA. Inspire_left: `xarm_inspire_left.yml` + `inspire_left_floating.yml`, same numerics as inspire. Joint order is right/left-mirrored only in *names*, so `INSPIRE_INIT` is shared between inspire and inspire_left.
 - **Inspire hand conversion**: `_convert_inspire` maps radians → 0-1000 controller units with joint reordering (cuRobo order: thumb_yaw/pitch/index/middle/ring/pinky → controller order: pinky/ring/middle/index/thumb_pitch/thumb_yaw). Joints are normalized by per-joint limits `[1.15, 0.55, 1.6, 1.6, 1.6, 1.6]`, inverted (1000=fully open, 0=fully closed).
 - **retract_config fix**: `xarm_allegro.yml` retract_config finger joints updated to `ALLEGRO_INIT` values — old values had thumb base violating joint limit [0.263, 1.396]. Code uses `robot_config.py` INIT_STATE instead of YAML retract_config for `plan_single_js` start state.
 

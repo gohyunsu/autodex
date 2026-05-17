@@ -29,7 +29,7 @@ from scipy.spatial.transform import Rotation as Rot
 sys.path.insert(0, os.path.join(os.path.expanduser("~"), "paradex"))
 
 from paradex.visualization.visualizer.viser import ViserViewer
-from autodex.utils.path import obj_path, project_dir
+from autodex.utils.path import obj_path, project_dir, repo_dir
 
 
 URDF_BY_HAND = {
@@ -154,6 +154,86 @@ def preload_sweep_cells(sweep_dir: Path):
     return xs, tzs, cells, summary
 
 
+def discover_pair_dirs(obj: str, h_cm: int, hand: str) -> list:
+    """List all pair subdirs containing sweep_summary.json."""
+    obj_root = (Path(repo_dir) / "outputs" / "reset_cache" / hand / obj
+                / f"reorient_{h_cm}")
+    if not obj_root.exists():
+        return []
+    return sorted(
+        [d for d in obj_root.iterdir()
+         if d.is_dir() and (d / "sweep_summary.json").exists()],
+        key=lambda d: tuple(int(x) for x in d.name.split("_")),
+    )
+
+
+def run_multi_explorer(vis: ViserViewer, urdf_fk: yourdfpy.URDF, ee_link: str,
+                        pair_dirs: list):
+    """Pair dropdown + (x_idx, tz_idx) sliders. Switching pair reloads cells."""
+    # Preload all pairs (cheap — np.load per cell file already done lazily)
+    pair_caches = {}  # pair_name -> (xs, tzs, cells, summary)
+    for pd in pair_dirs:
+        try:
+            xs, tzs, cells, summary = preload_sweep_cells(pd)
+            pair_caches[pd.name] = (xs, tzs, cells, summary)
+        except Exception as e:
+            print(f"[view_reset] skip {pd.name}: {e}")
+
+    if not pair_caches:
+        raise RuntimeError("no successful pairs to explore")
+
+    pair_names = list(pair_caches.keys())
+    pair_dropdown = vis.server.gui.add_dropdown(
+        "(i, j) pair", options=tuple(pair_names), initial_value=pair_names[0],
+    )
+    x_slider = vis.server.gui.add_slider("pickup x idx", min=0, max=1, step=1, initial_value=0)
+    tz_slider = vis.server.gui.add_slider("pickup tz idx", min=0, max=1, step=1, initial_value=0)
+    cell_info = vis.server.gui.add_text("Cell", initial_value="", disabled=True)
+    status_info = vis.server.gui.add_text("Status", initial_value="", disabled=True)
+
+    def reload_pair():
+        name = pair_dropdown.value
+        xs, tzs, cells, _summary = pair_caches[name]
+        x_slider.max = max(len(xs) - 1, 0); x_slider.value = 0
+        tz_slider.max = max(len(tzs) - 1, 0); tz_slider.value = 0
+        return xs, tzs, cells
+
+    state = {"xs": None, "tzs": None, "cells": None}
+
+    def load_current_cell():
+        xs, tzs, cells = state["xs"], state["tzs"], state["cells"]
+        xi = min(x_slider.value, len(xs) - 1)
+        tzi = min(tz_slider.value, len(tzs) - 1)
+        x, tz = xs[xi], tzs[tzi]
+        cell_info.value = f"{pair_dropdown.value}  x={x:.2f}  tz={tz:.0f}°"
+        cell = cells.get((x, tz))
+        if cell is None:
+            status_info.value = "FAIL — no trajectory"
+            vis.clear_traj(); return
+        status_info.value = f"ok  seed={cell['seed_id']}"
+        vis.clear_traj()
+        for ph in cell["phase_names"]:
+            robot_traj = cell["trajs"][ph]
+            obj_traj = build_obj_trajectory(
+                ph, robot_traj, cell["T_obj_start"], cell["T_obj_end"],
+                urdf_fk, ee_link, cell["wrist_se3_obj_inv"],
+            )
+            vis.add_traj(ph, {"robot": robot_traj}, {"object": obj_traj})
+
+    @pair_dropdown.on_update
+    def _(_):
+        state["xs"], state["tzs"], state["cells"] = reload_pair()
+        load_current_cell()
+
+    @x_slider.on_update
+    def _(_): load_current_cell()
+    @tz_slider.on_update
+    def _(_): load_current_cell()
+
+    state["xs"], state["tzs"], state["cells"] = reload_pair()
+    load_current_cell()
+
+
 def run_explorer(vis: ViserViewer, urdf_fk: yourdfpy.URDF, ee_link: str,
                   xs, tzs, cells):
     """Add x/tz sliders + load the corresponding cell trajectory on change."""
@@ -197,34 +277,95 @@ def run_explorer(vis: ViserViewer, urdf_fk: yourdfpy.URDF, ee_link: str,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--plan_dir", default=None, help="Directory with trajectory.npz + meta.json (single-cell mode)")
-    parser.add_argument("--sweep_dir", default=None, help="Sweep root dir (sweep-lookup mode)")
-    parser.add_argument("--x", type=float, default=None, help="pickup x (sweep mode)")
-    parser.add_argument("--tz", type=float, default=None, help="pickup theta_z deg (sweep mode)")
+    parser.add_argument("--plan_dir", default=None, help="Single trajectory dir (trajectory.npz + meta.json)")
+    parser.add_argument("--sweep_dir", default=None, help="Sweep pair dir (one (i,j))")
+    parser.add_argument("--obj", default=None, help="Object name (multi-pair explorer)")
+    parser.add_argument("--h_cm", type=int, default=None, help="lift height (multi-pair)")
+    parser.add_argument("--hand", default="inspire_left")
+    parser.add_argument("--x", type=float, default=None, help="pickup x (single-cell lookup)")
+    parser.add_argument("--tz", type=float, default=None, help="pickup theta_z deg")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 
     # Mode selection:
-    #   --plan_dir: single trajectory
-    #   --sweep_dir + --x + --tz: single, looked up from sweep
-    #   --sweep_dir alone: explorer with sliders
+    #   --plan_dir            : single trajectory replay
+    #   --sweep_dir + x + tz  : nearest-cell lookup
+    #   --sweep_dir           : explorer over that pair (sliders)
+    #   --obj + --h_cm        : multi-pair explorer (dropdown + sliders)
+    multi_pair = False
     explorer = False
-    if args.plan_dir is None:
-        if args.sweep_dir is None:
-            parser.error("either --plan_dir or --sweep_dir")
-        if args.x is None and args.tz is None:
-            explorer = True
-        elif args.x is not None and args.tz is not None:
-            plan_dir = resolve_plan_dir_from_sweep(Path(args.sweep_dir), args.x, args.tz)
-        else:
-            parser.error("--x and --tz must be given together (or both omitted for explorer)")
-    else:
-        plan_dir = Path(args.plan_dir)
+    plan_dir = None
 
-    if explorer:
+    if args.plan_dir is not None:
+        plan_dir = Path(args.plan_dir)
+    elif args.sweep_dir is not None:
+        if args.x is not None and args.tz is not None:
+            plan_dir = resolve_plan_dir_from_sweep(Path(args.sweep_dir), args.x, args.tz)
+        elif args.x is None and args.tz is None:
+            explorer = True
+        else:
+            parser.error("--x and --tz must be given together")
+    elif args.obj is not None and args.h_cm is not None:
+        multi_pair = True
+    else:
+        parser.error("specify one of: --plan_dir | --sweep_dir | (--obj + --h_cm)")
+
+    if multi_pair:
+        pair_dirs = discover_pair_dirs(args.obj, args.h_cm, args.hand)
+        if not pair_dirs:
+            raise RuntimeError(
+                f"No sweep results under outputs/reset_cache/{args.hand}/{args.obj}"
+                f"/reorient_{args.h_cm}. Run sweep_reset.py first."
+            )
+        # Use a successful cell for sample metadata if any exists; otherwise
+        # fall back to canonical Ti for object placement and identity for grasp.
+        sample = None
+        sample_summary = None
+        for pd in pair_dirs:
+            try:
+                _xs, _tzs, _cells, _summary = preload_sweep_cells(pd)
+            except Exception as e:
+                print(f"[view_reset] skip {pd.name}: {e}")
+                continue
+            ok = next((c for c in _cells.values() if c is not None), None)
+            if ok is not None and sample is None:
+                sample, sample_summary = ok, _summary
+                break
+
+        if sample is not None:
+            meta = {
+                "hand": sample["hand"], "obj_name": sample["obj_name"],
+                "i": sample_summary["i"], "j": sample_summary["j"],
+                "h_cm": sample_summary["h_cm"],
+                "pickup_x": 0.0, "pickup_tz": 0.0,
+                "seed_id": "(multi)", "phase_names": sample["phase_names"],
+                "T_obj_start": sample["T_obj_start"].tolist(),
+                "T_obj_end": sample["T_obj_end"].tolist(),
+                "wrist_se3_obj": np.linalg.inv(sample["wrist_se3_obj_inv"]).tolist(),
+            }
+        else:
+            # No successful cell anywhere — still open the viewer to inspect
+            # the fail patterns. Default object at canonical Ti from first pair.
+            from autodex.utils.path import obj_path as _obj_path
+            first_summary = json.load(open(pair_dirs[0] / "sweep_summary.json"))
+            i0 = first_summary["i"]
+            Ti = np.load(Path(_obj_path) / args.obj / "processed_data"
+                         / "info" / "tabletop" / f"{i0:03d}.npy")
+            meta = {
+                "hand": args.hand, "obj_name": args.obj,
+                "i": i0, "j": first_summary["j"], "h_cm": args.h_cm,
+                "pickup_x": 0.0, "pickup_tz": 0.0,
+                "seed_id": "(no-success)", "phase_names": [],
+                "T_obj_start": Ti.tolist(),
+                "T_obj_end": Ti.tolist(),
+                "wrist_se3_obj": np.eye(4).tolist(),
+            }
+            print(f"[view_reset] all {len(pair_dirs)} pairs are 0/N — "
+                  f"opening viewer in fail-inspection mode")
+        traj = None
+    elif explorer:
         sweep_dir = Path(args.sweep_dir)
         xs, tzs, cells, summary = preload_sweep_cells(sweep_dir)
-        # Pick any successful cell to source robot/object metadata
         sample = next((c for c in cells.values() if c is not None), None)
         if sample is None:
             raise RuntimeError(f"No successful cells in {sweep_dir} to preview")
@@ -286,7 +427,9 @@ def main():
                TABLE_DIMS, [*TABLE_POSE_XYZ, 1.0, 0.0, 0.0, 0.0],
                color=(0.85, 0.85, 0.90, 0.7))
 
-    if explorer:
+    if multi_pair:
+        run_multi_explorer(vis, urdf_fk, ee_link, pair_dirs)
+    elif explorer:
         run_explorer(vis, urdf_fk, ee_link, xs, tzs, cells)
     else:
         # Build per-phase trajectories and add to viewer

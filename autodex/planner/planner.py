@@ -474,6 +474,148 @@ class GraspPlanner:
             trajs = trajs[np.newaxis]
         return success, trajs
 
+    def plan_wrist_reorient(self,
+                             scene_cfg: dict,
+                             current_qpos: np.ndarray,
+                             target_wrist_se3: np.ndarray,
+                             hold_hand_qpos: np.ndarray,
+                             n_yaw: int = 8,
+                             ) -> tuple:
+        """Plan an in-air wrist reorient to ``target_wrist_se3`` (in WORLD).
+
+        The held object is assumed yaw-symmetric around the world-z axis
+        (true for tabletop classes — see ``tabletop_pose._z_aligned_geodesic``).
+        Generates ``n_yaw`` candidates rotated around world-z, runs IK on all
+        of them, picks the IK solution closest to ``current_qpos`` in arm
+        joint space (joint-6 wrap-unrolled), then runs ``plan_single_js`` for
+        the full 22-DOF trajectory holding ``hold_hand_qpos`` throughout.
+
+        Args:
+            scene_cfg: scene with the held object's mesh.target.pose updated
+                       to wherever it currently is in WORLD (for visualization
+                       / planner table-cuboid). The IK solver itself runs on
+                       a table-only world (no held mesh as obstacle) — held
+                       object collisions are the caller's responsibility (see
+                       LIFT_HEIGHT_M in reorient_drop.py).
+            current_qpos: (22,) arm + hand qpos right now (squeeze state).
+            target_wrist_se3: (4, 4) WORLD-frame wrist target. Position is
+                              held, orientation is what matters; the N yaw
+                              candidates rotate this orientation around
+                              world-z.
+            hold_hand_qpos: (n_finger,) finger config to hold throughout
+                            (e.g. the squeeze pose from ``execute``).
+            n_yaw: number of yaw candidates around world-z (8 ~= 45° steps).
+
+        Returns:
+            (traj or None, info_dict)
+            traj: (T, 22) interpolated joint trajectory if planning succeeded
+            info: dict with n_ik_success, best_yaw_idx, best_arm_dist_rad,
+                  reason (set on failure).
+        """
+        import time as _time
+
+        info = {"n_yaw": n_yaw, "n_ik_success": 0, "best_yaw_idx": -1,
+                "best_arm_dist_rad": float("inf")}
+        t0 = _time.time()
+
+        # 1. Ensure motion_gen + ik_solver are initialized (lazy init mirrors
+        #    plan_js_to_init / solve_ik patterns).
+        world_cfg = _to_curobo_world(scene_cfg)
+        if self._motion_gen is None:
+            self._init_motion_gen(world_cfg)
+        elif self._world_structure_changed(world_cfg):
+            self._update_world(world_cfg)
+        else:
+            self._update_target_pose_only(world_cfg)
+        self._cached_world = world_cfg
+
+        # IK solver world: table only (no held mesh — it's "attached" to robot).
+        world_cfg_no_target = dict(world_cfg)
+        world_cfg_no_target["mesh"] = {}
+        if self._ik_solver is None:
+            self._init_ik_solver(world_cfg_no_target)
+        else:
+            self._ik_solver.update_world(WorldConfig.from_dict(world_cfg_no_target))
+
+        # 2. Generate N yaw candidates around world-z.
+        R_target = target_wrist_se3[:3, :3]
+        p_target = target_wrist_se3[:3, 3]
+        candidates = np.zeros((n_yaw, 4, 4))
+        for k in range(n_yaw):
+            theta = 2.0 * np.pi * k / n_yaw
+            c, s = np.cos(theta), np.sin(theta)
+            R_z = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+            T = np.eye(4)
+            T[:3, :3] = R_z @ R_target
+            T[:3, 3] = p_target
+            candidates[k] = T
+
+        # 3. Pad to BATCH_SIZE for cuRobo IK (matches solve_ik pattern).
+        B = n_yaw
+        if B < self.BATCH_SIZE:
+            pad = self.BATCH_SIZE - B
+            cand_padded = np.concatenate(
+                [candidates, np.tile(candidates[:1], (pad, 1, 1))], axis=0)
+        else:
+            cand_padded = candidates
+
+        goal = _to_curobo_pose(cand_padded, self._tensor_args.device)
+
+        # Retract toward current arm qpos so IK picks the closest solution.
+        retract = torch.tensor(
+            np.asarray(current_qpos[:6], dtype=np.float32),
+            dtype=torch.float32, device=self._tensor_args.device,
+        )
+        result = self._ik_solver.solve_batch(goal, retract_config=retract)
+        succ = result.success.cpu().numpy()[:B]
+        q_sol = result.solution.cpu().numpy()[:B]
+        if q_sol.ndim == 3:
+            q_sol = q_sol[:, 0, :]
+        info["n_ik_success"] = int(succ.sum())
+        info["ik_solve_s"] = round(_time.time() - t0, 3)
+
+        # 4. Pick the IK solution closest to current arm qpos (joint-6 wrap).
+        best_arm_q = None
+        best_dist = np.inf
+        best_idx = -1
+        for i in range(B):
+            if not succ[i]:
+                continue
+            arm_q = q_sol[i, :6].copy()
+            diff = arm_q[5] - current_qpos[5]
+            arm_q[5] -= np.round(diff / (2.0 * np.pi)) * 2.0 * np.pi
+            dist = float(np.linalg.norm(arm_q - np.asarray(current_qpos[:6])))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+                best_arm_q = arm_q
+        info["best_yaw_idx"] = int(best_idx)
+        info["best_arm_dist_rad"] = float(best_dist)
+
+        if best_arm_q is None:
+            info["reason"] = "no_ik_feasible_among_yaw_candidates"
+            return None, info
+
+        # 5. plan_single_js for the full 22-DOF traj (hand held constant).
+        t1 = _time.time()
+        start_full = np.asarray(current_qpos, dtype=np.float32)
+        n_hand = len(self._init_state) - 6
+        hand_held = np.asarray(hold_hand_qpos, dtype=np.float32)
+        if len(hand_held) != n_hand:
+            info["reason"] = (
+                f"hold_hand_qpos len={len(hand_held)} != expected {n_hand}"
+            )
+            return None, info
+        goal_full = np.concatenate([best_arm_q.astype(np.float32), hand_held])
+        ok, traj = self._refine_fingers(start_full, goal_full)
+        info["plan_s"] = round(_time.time() - t1, 3)
+        if not ok:
+            info["reason"] = "plan_single_js_failed"
+            return None, info
+        info["plan_success"] = True
+        info["goal_qpos"] = goal_full.tolist()
+        return traj, info
+
     def plan_js_to_init(self, scene_cfg: dict,
                         start_arm_qpos: np.ndarray,
                         start_hand_qpos: Optional[np.ndarray] = None,

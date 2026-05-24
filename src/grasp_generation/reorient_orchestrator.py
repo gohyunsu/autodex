@@ -21,6 +21,7 @@ import os
 import sys
 import re
 import json
+import shutil
 import argparse
 import subprocess
 from pathlib import Path
@@ -28,7 +29,7 @@ from pathlib import Path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src", "grasp_generation", "reorient"))
 
-from gen_scene import _obj_dir, gen_reorient_scene  # noqa: E402
+from gen_scene import gen_reorient_scene  # noqa: E402
 
 from autodex.utils.path import obj_path as default_obj_path  # noqa: E402
 
@@ -171,6 +172,78 @@ def count_passing(hand, exp_name, obj_name, scene_type, scene_id):
                if os.path.isdir(os.path.join(cand_dir, d)))
 
 
+def mirror_pairs_at_h0(hand, obj_name, pairs):
+    """For each (i, j) with i < j, mutually copy candidates between i_j and j_i
+    across all reset_0* variants. Only valid at h=0: with h=0 the reorient is
+    in-place rotation (no pillars), and the i->j and j->i tasks are inverses of
+    each other — a grasp at the start of one is usually valid at the start of
+    the other (different scene constraints but typically similar enough).
+
+    Copied entries are prefixed `mirror_{src_sid}_` to avoid name collisions
+    and to allow re-running this function idempotently."""
+    cand_root = os.path.join(REPO_ROOT, "candidates", hand)
+    if not os.path.isdir(cand_root):
+        return
+    variants = [e for e in os.listdir(cand_root)
+                if e == "reset_0" or e.startswith("reset_0_")]
+    seen = set()
+    n_copied = 0
+    for i, j in pairs:
+        if i == j:
+            continue
+        key = (min(i, j), max(i, j))
+        if key in seen:
+            continue
+        seen.add(key)
+        sid_ij = f"{i}_{j}"
+        sid_ji = f"{j}_{i}"
+        for exp in variants:
+            dir_ij = os.path.join(cand_root, exp, obj_name, "reorient_0", sid_ij)
+            dir_ji = os.path.join(cand_root, exp, obj_name, "reorient_0", sid_ji)
+            orig_ij = [d for d in os.listdir(dir_ij)
+                       if not d.startswith("mirror_")] if os.path.isdir(dir_ij) else []
+            orig_ji = [d for d in os.listdir(dir_ji)
+                       if not d.startswith("mirror_")] if os.path.isdir(dir_ji) else []
+            if orig_ji:
+                os.makedirs(dir_ij, exist_ok=True)
+                for d in orig_ji:
+                    src = os.path.join(dir_ji, d)
+                    dst = os.path.join(dir_ij, f"mirror_{sid_ji}_{d}")
+                    if os.path.isdir(src) and not os.path.exists(dst):
+                        shutil.copytree(src, dst)
+                        n_copied += 1
+            if orig_ij:
+                os.makedirs(dir_ji, exist_ok=True)
+                for d in orig_ij:
+                    src = os.path.join(dir_ij, d)
+                    dst = os.path.join(dir_ji, f"mirror_{sid_ij}_{d}")
+                    if os.path.isdir(src) and not os.path.exists(dst):
+                        shutil.copytree(src, dst)
+                        n_copied += 1
+    return n_copied
+
+
+def count_passing_combined(hand, h_cm, obj_name, scene_type, scene_id):
+    """Sum candidates across all variants (exp_names) for the same h.
+
+    A scene is considered "done" when the union of candidates from base,
+    inflate10, etc. reaches the threshold — grasps from different variants
+    are all valid for the same reorient task at this h.
+    """
+    cand_root = os.path.join(REPO_ROOT, "candidates", hand)
+    if not os.path.isdir(cand_root):
+        return 0
+    total = 0
+    for exp_name in os.listdir(cand_root):
+        if not (exp_name == f"reset_{h_cm}" or exp_name.startswith(f"reset_{h_cm}_")):
+            continue
+        cand_dir = os.path.join(cand_root, exp_name, obj_name, scene_type, scene_id)
+        if os.path.isdir(cand_dir):
+            total += sum(1 for d in os.listdir(cand_dir)
+                         if os.path.isdir(os.path.join(cand_dir, d)))
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
@@ -183,50 +256,87 @@ def process_obj(obj_name, hand, obj_root, obj_list_file,
     if not pairs:
         return {"status": "no_tabletop_poses"}
 
-    # Per (h, i_j) state. Same (i, j) at different h is treated independently
-    # (different scene; reset h is a task parameter).
-    state = {}  # (h_cm, scene_id) -> {"valid": int, "done": bool, "history": [...]}
-    for h_cm in h_sweep:
-        ensure_scenes(obj_name, h_cm, obj_root, pairs)
-        for i, j in pairs:
-            state[(h_cm, f"{i}_{j}")] = {"valid": 0, "done": False, "history": []}
+    # Per-scene state. h is an escalation axis: a scene marked done at h=0
+    # is skipped at h=4 (h=4 is fallback, not separate task).
+    state = {f"{i}_{j}": {"valid": 0, "done": False, "satisfied_at_h": None,
+                          "history": []} for i, j in pairs}
 
     # Build schedule: outer h, middle variant, inner N
     for h_cm in h_sweep:
+        active_initial = [sid for sid, s in state.items() if not s["done"]]
+        if not active_initial:
+            print(f"  [h={h_cm}] all scenes satisfied at earlier h — skip", flush=True)
+            continue
+        ensure_scenes(obj_name, h_cm, obj_root, pairs)
         variants = discover_yml_variants(hand, h_cm)
         if not variants:
-            print(f"  [h={h_cm}] no yml variants — skip")
+            print(f"  [h={h_cm}] no yml variants — skip", flush=True)
             continue
         scene_type = f"reorient_{h_cm}"
 
         for variant_tag, yml_relpath in variants:
             exp_name = f"reset_{h_cm}" if variant_tag == "base" else f"reset_{h_cm}_{variant_tag}"
             for n_idx, N in enumerate(n_sweep):
-                active_ids = [sid for (h, sid), s in state.items()
-                              if h == h_cm and not s["done"]]
+                active_ids = [sid for sid, s in state.items() if not s["done"]]
                 if not active_ids:
-                    break  # all (i, j) at this h satisfied
+                    break
                 seed = seeds[n_idx % len(seeds)]
                 print(f"  [h={h_cm}] variant={variant_tag} N={N} seed={seed}: "
-                      f"{len(active_ids)} active (exp={exp_name})")
-                run_bodex(yml_relpath, exp_name, obj_list_file, scene_type,
-                          active_ids, N, seed,
-                          obj_root_dir=obj_root if obj_root != default_obj_path else None)
-                run_sim_filter(hand, exp_name, obj_name,
-                               obj_root_dir=obj_root if obj_root != default_obj_path else None)
+                      f"{len(active_ids)} active (exp={exp_name})", flush=True)
+                try:
+                    run_bodex(yml_relpath, exp_name, obj_list_file, scene_type,
+                              active_ids, N, seed,
+                              obj_root_dir=obj_root if obj_root != default_obj_path else None)
+                    run_sim_filter(hand, exp_name, obj_name,
+                                   obj_root_dir=obj_root if obj_root != default_obj_path else None)
+                except RuntimeError as e:
+                    print(f"    [FAIL] {e} — skipping this round, continuing schedule",
+                          flush=True)
+                    for sid in active_ids:
+                        state[sid]["history"].append({
+                            "h": h_cm, "variant": variant_tag, "exp": exp_name,
+                            "N": N, "seed": seed, "valid": None, "error": str(e)})
+                    continue
                 for sid in active_ids:
-                    cnt = count_passing(hand, exp_name, obj_name, scene_type, sid)
-                    s = state[(h_cm, sid)]
-                    s["valid"] = max(s["valid"], cnt)
-                    s["history"].append({"variant": variant_tag, "exp": exp_name,
-                                          "N": N, "seed": seed, "valid": cnt})
-                    if cnt >= threshold:
+                    cnt_variant = count_passing(hand, exp_name, obj_name, scene_type, sid)
+                    cnt_total_h = count_passing_combined(hand, h_cm, obj_name, scene_type, sid)
+                    s = state[sid]
+                    s["valid"] = max(s["valid"], cnt_total_h)
+                    s["history"].append({
+                        "h": h_cm, "variant": variant_tag, "exp": exp_name,
+                        "N": N, "seed": seed,
+                        "valid_variant": cnt_variant, "valid_total_h": cnt_total_h})
+                    if cnt_total_h >= threshold:
                         s["done"] = True
-                cnts = sorted([state[(h_cm, sid)]["valid"] for sid in active_ids],
+                        s["satisfied_at_h"] = h_cm
+                cnts = sorted([state[sid]["valid"] for sid in active_ids],
                               reverse=True)[:5]
-                print(f"    -> top5 valid: {cnts}")
+                print(f"    -> top5 valid (h={h_cm} total): {cnts}", flush=True)
 
-    return {f"{h}_{sid}": s for (h, sid), s in state.items()}
+        # h=0 only: mutually mirror i_j <-> j_i candidates. With no pillars at
+        # h=0 the tasks are inverses and a grasp at the start of one is usually
+        # usable at the start of the other.
+        if h_cm == 0:
+            n_copied = mirror_pairs_at_h0(hand, obj_name, pairs)
+            if n_copied:
+                print(f"  [h=0] mirrored {n_copied} candidate dirs between "
+                      f"i_j <-> j_i pairs", flush=True)
+
+        # End of this h's escalation. Accept-partial: scenes with >0 candidates
+        # at this h are marked done (won't escalate to next h). h+1 is only for
+        # scenes with literally 0 candidates here (h+1 is fallback for hopeless
+        # ones, not a way to mix grasps from physically different trajectories).
+        for sid, s in state.items():
+            if s["done"]:
+                continue
+            cnt = count_passing_combined(hand, h_cm, obj_name, scene_type, sid)
+            if cnt > 0:
+                s["valid"] = max(s["valid"], cnt)
+                s["done"] = True
+                s["satisfied_at_h"] = h_cm
+                s["status"] = f"partial_at_h{h_cm}"
+
+    return state
 
 
 def main():

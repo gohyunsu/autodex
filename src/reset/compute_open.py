@@ -42,8 +42,8 @@ from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
 from curobo.geom.sdf.world import CollisionQueryBuffer
 
 
-N_ITER = 30
-LR = 0.02
+N_ITER = 60
+LR = 0.04
 K_SWEEP = 30
 
 # Sphere index ranges per link, in inspire_left_floating collision_link_names order.

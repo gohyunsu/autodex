@@ -29,13 +29,13 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src", "scene_generation"))
 
-from generate_scene import get_shelf_scene, get_wall_scene, get_box_scene  # noqa: E402
+from generate_scene import get_shelf_scene, get_wall_scene, get_box_scene, get_tabletop_scene  # noqa: E402
 
 from autodex.utils.path import obj_path as default_obj_path  # noqa: E402
 
 
 # --- Schedules ---
-GAP_SWEEP_WALL_SHELF = [0.0, 0.02, 0.04, 0.06, 0.08]
+GAP_SWEEP_WALL_SHELF = [0.02, 0.04, 0.06, 0.08]
 HEIGHT_SWEEP_BOX = [0.05, 0.08]
 N_SWEEP = [200, 1000, 5000]
 SUCCESS_THRESHOLD = 5
@@ -125,6 +125,10 @@ def enumerate_scene_configs(obj_name, scene_type, obj_root, symmetry_reg, pose_f
             if include:
                 out.append({"id": str(sid), "pose_idx": pose_idx, "pose": pose})
             sid += 1
+        elif scene_type == "table":
+            if include:
+                out.append({"id": str(sid), "pose_idx": pose_idx, "pose": pose})
+            sid += 1
         else:
             raise ValueError(scene_type)
     return out
@@ -138,6 +142,8 @@ def build_scene_dict(obj_name, scene_type, cfg, obb_info, gap_or_h):
                                up=cfg["up"], side=cfg["side"], back=cfg["back"])
     if scene_type == "box":
         return get_box_scene(obj_name, cfg["pose"], gap_or_h)
+    if scene_type == "table":
+        return get_tabletop_scene(obj_name, cfg["pose"])
     raise ValueError(scene_type)
 
 
@@ -150,6 +156,8 @@ def make_meta(scene_type, cfg, gap_or_h):
                          "up": cfg["up"], "side": cfg["side"], "back": cfg["back"]}
     elif scene_type == "box":
         meta["param"] = {"height_offset": gap_or_h}
+    elif scene_type == "table":
+        meta["param"] = {}
     return meta
 
 
@@ -323,13 +331,29 @@ def clear_scene_candidates(hand, exp_name, obj_name, scene_type, scene_id):
 # ---------------------------------------------------------------------------
 
 def process_obj_scene_type(obj_name, scene_type, hand, exp_name, obj_root,
-                           symmetry_reg, obj_list_file, parallel=20, pose_filter=None, seeds=(123,)):
+                           symmetry_reg, obj_list_file, parallel=20, pose_filter=None, seeds=(123,),
+                           resume=False, summary_path=None):
     """Run adaptive loop for one (obj, scene_type). Returns summary dict."""
-    sched = (HEIGHT_SWEEP_BOX if scene_type == "box" else GAP_SWEEP_WALL_SHELF)
+    if scene_type == "box":
+        sched = HEIGHT_SWEEP_BOX
+    elif scene_type == "table":
+        # No gap/height dimension — single scene per tabletop pose, only N escalates.
+        sched = [None]
+    else:
+        sched = GAP_SWEEP_WALL_SHELF
     obb_info_path = os.path.join(obj_root, obj_name, "processed_data", "info", "simplified.json")
     obb_info = json.load(open(obb_info_path))
 
-    # Initial generation with first gap
+    # Load prior state if resuming
+    prior_state = {}
+    if resume and summary_path and os.path.isfile(summary_path):
+        try:
+            prior_summary = json.load(open(summary_path))
+            prior_state = prior_summary.get(scene_type, {})
+        except Exception:
+            prior_state = {}
+
+    # Initial generation with first gap (always re-generate scene files, but optionally skip wipe of candidates)
     scenes, _ = initial_scene_generation(obj_name, scene_type, obj_root, symmetry_reg, sched[0],
                                          pose_filter=pose_filter)
     print(f"  [{scene_type}] {len(scenes)} initial scenes at gap/h={sched[0]}")
@@ -339,12 +363,35 @@ def process_obj_scene_type(obj_name, scene_type, hand, exp_name, obj_root,
                    "final": None, "history": []}
              for sid in scenes}
 
-    # Wipe prior outputs for this obj/scene_type
+    # If resuming: seed state from prior summary. Successful scenes marked done.
+    if resume:
+        n_resumed = 0
+        for sid in state:
+            prior = prior_state.get(sid)
+            if prior and prior.get("final", {}).get("status") == "success":
+                state[sid]["done"] = True
+                state[sid]["final"] = prior["final"]
+                state[sid]["best_valid"] = prior.get("best_valid", prior["final"].get("valid", 0))
+                state[sid]["history"] = prior.get("history", [])
+                # Restore scene file to prior gap so it matches existing candidates
+                prior_gap = prior["final"].get("gap", sched[0])
+                write_scene_file(obj_name, obj_root, scene_type, scenes[sid], obb_info, prior_gap)
+                n_resumed += 1
+        print(f"  [{scene_type}] resume: {n_resumed}/{len(scenes)} scenes restored as success")
+
+    # Wipe prior outputs for scenes NOT being resumed (i.e. not done)
     base_bodex = os.path.join(REPO_ROOT, "bodex_outputs", hand, exp_name, obj_name, scene_type)
     base_cand = os.path.join(REPO_ROOT, "candidates", hand, exp_name, obj_name, scene_type)
-    for d in (base_bodex, base_cand):
-        if os.path.isdir(d):
-            shutil.rmtree(d)
+    if not resume:
+        for d in (base_bodex, base_cand):
+            if os.path.isdir(d):
+                shutil.rmtree(d)
+    else:
+        # Selective wipe: only non-done scenes
+        for sid, s in state.items():
+            if not s["done"]:
+                clear_scene_bodex(hand, exp_name, obj_name, scene_type, sid)
+                clear_scene_candidates(hand, exp_name, obj_name, scene_type, sid)
 
     # Schedule order: gap outer, N inner.
     # Each gap independently tries to reach SUCCESS_THRESHOLD via N escalation;
@@ -426,6 +473,77 @@ def process_obj_scene_type(obj_name, scene_type, hand, exp_name, obj_root,
         cnts = sorted([c for _, c in per_scene_valid], reverse=True)[:5]
         print(f"    -> valid (top5): {cnts}  succ={n_succ}/{len(active_ids)}  zero={n_zero}")
 
+    # ── Bonus phase: scenes that succeeded at sched[0] (smallest primary gap)
+    # try one more round at gap=0.0 (smaller than primary start). If bonus also
+    # reaches threshold, prefer it (smaller gap = more realistic obstacle layout).
+    if scene_type != "box":
+        bonus_gap = 0.0
+        bonus_candidates = [sid for sid, s in state.items()
+                            if s["final"] and s["final"].get("status") == "success"
+                            and abs(s["final"].get("gap", -1) - sched[0]) < 1e-9]
+        if bonus_candidates:
+            print(f"  [{scene_type}] bonus phase: gap={bonus_gap} on {len(bonus_candidates)} success-at-{sched[0]} scenes")
+            # Backup primary candidates, regen scenes at bonus gap, clear bodex
+            for sid in bonus_candidates:
+                cand_dir = os.path.join(REPO_ROOT, "candidates", hand, exp_name,
+                                        obj_name, scene_type, sid)
+                backup = cand_dir + "_pre_bonus"
+                if os.path.isdir(backup):
+                    shutil.rmtree(backup)
+                if os.path.isdir(cand_dir):
+                    shutil.move(cand_dir, backup)
+                ok = write_scene_file(obj_name, obj_root, scene_type,
+                                      scenes[sid], obb_info, bonus_gap)
+                if not ok:
+                    # Scene not buildable at gap=0.0. Restore primary.
+                    if os.path.isdir(backup):
+                        shutil.move(backup, cand_dir)
+                    write_scene_file(obj_name, obj_root, scene_type,
+                                     scenes[sid], obb_info, sched[0])
+                    bonus_candidates = [s for s in bonus_candidates if s != sid]
+                    continue
+                clear_scene_bodex(hand, exp_name, obj_name, scene_type, sid)
+
+            # Run BODex+sim_filter at N=200 with first seed (cheap bonus)
+            if bonus_candidates:
+                bd_seed = seeds[0]
+                bonus_N = N_SWEEP[0]
+                run_bodex(hand, exp_name, scene_type, obj_name, bonus_N, bonus_candidates,
+                          obj_list_file, parallel=None,
+                          obj_root_dir=obj_root if obj_root != default_obj_path else None,
+                          seed=bd_seed)
+                run_sim_filter(hand, exp_name, obj_name,
+                               obj_root_dir=obj_root if obj_root != default_obj_path else None)
+                for sid in bonus_candidates:
+                    tag_fresh_candidates(hand, exp_name, obj_name, scene_type, sid, bonus_N, seed=bd_seed)
+                    cnt = count_passing(hand, exp_name, obj_name, scene_type, sid)
+                    backup = os.path.join(REPO_ROOT, "candidates", hand, exp_name,
+                                          obj_name, scene_type, sid) + "_pre_bonus"
+                    if cnt >= SUCCESS_THRESHOLD:
+                        # Bonus succeeded. Discard backup. Update final to bonus.
+                        if os.path.isdir(backup):
+                            shutil.rmtree(backup)
+                        s = state[sid]
+                        s["final"] = {"status": "success", "gap": bonus_gap,
+                                      "N": bonus_N, "valid": cnt, "via": "bonus"}
+                        s["history"].append({"gap": bonus_gap, "N": bonus_N,
+                                             "valid_cum": cnt, "phase": "bonus"})
+                        print(f"    bonus {sid}: {cnt} valid at gap={bonus_gap} -> ACCEPTED")
+                    else:
+                        # Bonus failed. Restore primary candidates and scene file.
+                        cand_dir = os.path.join(REPO_ROOT, "candidates", hand, exp_name,
+                                                obj_name, scene_type, sid)
+                        if os.path.isdir(cand_dir):
+                            shutil.rmtree(cand_dir)
+                        if os.path.isdir(backup):
+                            shutil.move(backup, cand_dir)
+                        write_scene_file(obj_name, obj_root, scene_type,
+                                         scenes[sid], obb_info, sched[0])
+                        clear_scene_bodex(hand, exp_name, obj_name, scene_type, sid)
+                        state[sid]["history"].append({"gap": bonus_gap, "N": bonus_N,
+                                                      "valid_cum": cnt, "phase": "bonus_rejected"})
+                        print(f"    bonus {sid}: {cnt} valid at gap={bonus_gap} -> REJECTED (primary kept)")
+
     return {sid: state[sid] for sid in state}
 
 
@@ -437,13 +555,15 @@ def main():
     parser.add_argument("--obj", default=None, help="Single object name (dry-run mode)")
     parser.add_argument("--obj_list_file", default=None)
     parser.add_argument("--scenes", nargs="+", default=["wall", "shelf", "box"],
-                        choices=["wall", "shelf", "box"])
+                        choices=["wall", "shelf", "box", "table"])
     parser.add_argument("--obj_root", default=default_obj_path)
     parser.add_argument("--parallel", type=int, default=20)
     parser.add_argument("--output_dir", default=None,
                         help="Where to write adaptive_summary.json (default: REPO/logging/adaptive/)")
     parser.add_argument("--pose_filter", nargs="+", default=None,
                         help="Only include scenes whose tabletop pose_idx is in this list (e.g. --pose_filter 002).")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip scenes already marked success in prior summary.json; only run failed/missing.")
     parser.add_argument("--seeds", type=int, nargs="+", default=[123],
                         help="One or more random seeds. Each (gap, N) round runs BODex+sim_filter once per seed, "
                              "accumulating candidates (tagged with seed).")
@@ -472,11 +592,13 @@ def main():
         obj_summary = {}
         for scene_type in args.scenes:
             print(f" {scene_type} ...")
+            summary_path = os.path.join(output_root, f"{obj_name}.json")
             state = process_obj_scene_type(
                 obj_name, scene_type, args.hand, args.version,
                 args.obj_root, symmetry_reg, obj_list_file, parallel=args.parallel,
                 pose_filter=set(args.pose_filter) if args.pose_filter else None,
                 seeds=tuple(args.seeds),
+                resume=args.resume, summary_path=summary_path,
             )
             obj_summary[scene_type] = {
                 sid: {"final": s["final"], "best_valid": s["best_valid"],

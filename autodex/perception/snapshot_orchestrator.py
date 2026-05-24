@@ -69,8 +69,37 @@ class _SubThread(threading.Thread):
         self.ctx = zmq.Context.instance()
         self.sock = self.ctx.socket(zmq.SUB)
         self.sock.setsockopt_string(zmq.SUBSCRIBE, "")
+        # Event-driven SUB connect handshake to avoid PUB→SUB slow joiner:
+        # PUB drops messages to peers that haven't completed TCP+SUBSCRIBE.
+        # zmq socket monitor fires CONNECTED once the SUB is actually wired
+        # to the remote PUB endpoint — we block until all N PCs have fired.
+        from zmq.utils.monitor import recv_monitor_message
+        mon_addr = f"inproc://snap_sub_mon_{id(self)}"
+        self.sock.monitor(mon_addr, zmq.EVENT_CONNECTED)
+        mon_sock = self.ctx.socket(zmq.PAIR)
+        mon_sock.connect(mon_addr)
+
         for ip in capture_ips:
             self.sock.connect(f"tcp://{ip}:{port}")
+
+        n_target = len(capture_ips)
+        n_connected = 0
+        deadline = time.time() + 5.0
+        while n_connected < n_target and time.time() < deadline:
+            if mon_sock.poll(timeout=100):
+                evt = recv_monitor_message(mon_sock)
+                if evt["event"] == zmq.EVENT_CONNECTED:
+                    n_connected += 1
+                    logger.info(f"[snapshot_sub] CONNECTED {n_connected}/{n_target}")
+        if n_connected < n_target:
+            logger.warning(
+                f"[snapshot_sub] only {n_connected}/{n_target} SUBs handshook "
+                f"in 5s — first snap may drop frames from late peers."
+            )
+        # Stop emitting monitor events; the SUB itself stays connected.
+        self.sock.disable_monitor()
+        mon_sock.close(0)
+
         self.buffer = buffer
         self._stop = threading.Event()
 
@@ -120,9 +149,10 @@ class SnapshotOrchestrator:
         self.capture_ips = capture_ips
         self.cmd = CommandSender(pc_list=pc_list, port=port_cmd)
         self.buf = _SnapBuffer()
+        # _SubThread.__init__ already event-blocks on zmq socket monitor until
+        # every SUB has fired CONNECTED, so no sleep needed here.
         self._sub_thread = _SubThread(capture_ips, port_snap, self.buf)
         self._sub_thread.start()
-        time.sleep(0.3)  # SUB connect handshake
 
     def snap(
         self,

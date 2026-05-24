@@ -334,16 +334,20 @@ def main():
                 pose_robot_before = np.linalg.inv(c2r) @ pose_world
                 tb_before = classify_tabletop_pose(pose_robot_before, args.obj)
                 rec["tabletop_before"] = tb_before
+                if tb_before is None:
+                    rec["progress"]["tabletop_before"] = "no_tabletop_data"
+                    rec["status"] = "no_tabletop_data"
+                    print("    no tabletop data — skipping cycle")
+                    raise _SoftSkip
                 rec["progress"]["tabletop_before"] = (
                     f"idx={tb_before['idx']} ({tb_before['rot_err_deg']:.1f}deg)"
-                    if tb_before else "no_tabletop_data"
                 )
-                if tb_before:
-                    print(f"    [tabletop before] idx={tb_before['idx']} "
-                          f"({tb_before['filename']}) err={tb_before['rot_err_deg']:.1f}deg")
+                print(f"    [tabletop before] idx={tb_before['idx']} "
+                      f"({tb_before['filename']}) err={tb_before['rot_err_deg']:.1f}deg")
 
-                # 3. Plan.
-                print(f"[cycle {cycle}] Planning (scene={SCENE})...")
+                # 3. Plan — restrict to grasps for this tabletop idx.
+                scene_id = str(tb_before["idx"])
+                print(f"[cycle {cycle}] Planning (scene={SCENE}, tabletop_idx={scene_id})...")
                 t0 = time.time()
                 scene_cfg = pose_world_to_scene_cfg(pose_world, c2r, args.obj)
                 scene_cfg = add_obstacles(scene_cfg, SCENE)
@@ -351,41 +355,46 @@ def main():
                     scene_cfg, args.obj, GRASP_VERSION,
                     skip_done=False,
                     success_only=SUCCESS_ONLY, hand=args.hand,
+                    scene_id=scene_id,
                 )
                 rec["timing"]["plan_s"] = round(time.time() - t0, 2)
                 print(f"    plan: {rec['timing']['plan_s']}s  success={result.success}")
                 _write_json(cdir / "scene_cfg.json", scene_cfg)
+
+                # 3.5 Viser preview (if enabled). Always show candidate slider
+                #     (red=filtered, green=valid) so collision-failed grasps
+                #     are inspectable; on plan success, the planned trajectory
+                #     is shown too. Closes the previous cycle's viewer first.
+                if args.viz:
+                    if vis is not None:
+                        try:
+                            vis.stop_viewer()
+                        except Exception as ve:
+                            print(f"[viz] previous viewer stop failed: {ve!r}")
+                    try:
+                        cand_wrist, _, cand_grasp, cand_filtered = (
+                            planner.get_candidates(
+                                scene_cfg, args.obj, GRASP_VERSION,
+                                success_only=SUCCESS_ONLY,
+                                skip_done=False, hand=args.hand,
+                                scene_id=scene_id,
+                            )
+                        )
+                        vis = ScenePlanVisualizer(
+                            scene_cfg,
+                            result if result.success else None,
+                            port=args.port_viser, hand=args.hand,
+                        )
+                        vis.add_candidates(cand_wrist, cand_grasp, cand_filtered)
+                        vis.start_viewer(use_thread=True)
+                        print(f"[viz] http://localhost:{args.port_viser} "
+                              f"(red=filtered, green=valid)")
+                    except Exception as cve:
+                        print(f"[viz] viewer setup failed: {cve!r}")
+
                 if not result.success:
                     rec["progress"]["plan"] = "failed"
                     rec["status"] = "plan_failed"
-                    # If --viz is on, show the scene + candidates (red=filtered,
-                    # green=valid) so the user can inspect why planning failed
-                    # before moving on to the next cycle.
-                    if args.viz:
-                        if vis is not None:
-                            try:
-                                vis.stop_viewer()
-                            except Exception as ve:
-                                print(f"[viz] previous viewer stop failed: {ve!r}")
-                        try:
-                            cand_wrist, _, cand_grasp, cand_filtered = (
-                                planner.get_candidates(
-                                    scene_cfg, args.obj, GRASP_VERSION,
-                                    success_only=SUCCESS_ONLY,
-                                    skip_done=False, hand=args.hand,
-                                )
-                            )
-                            vis = ScenePlanVisualizer(scene_cfg, None,
-                                                       port=args.port_viser,
-                                                       hand=args.hand)
-                            vis.add_candidates(cand_wrist, cand_grasp,
-                                               cand_filtered)
-                            vis.start_viewer(use_thread=True)
-                            print(f"[viz] plan FAILED — candidates viewer at "
-                                  f"http://localhost:{args.port_viser} "
-                                  f"(red=filtered, green=valid)")
-                        except Exception as cve:
-                            print(f"[viz] failed-plan viewer setup failed: {cve!r}")
                     raise _SoftSkip
                 rec["progress"]["plan"] = "ok"
 
@@ -398,22 +407,6 @@ def main():
                 rec["scene_info"] = result.scene_info
                 rec["candidate_idx"] = (result.timing.get("candidate_idx")
                                         if result.timing else None)
-
-                # 3.5 Viser preview (if enabled). Closes the previous cycle's
-                #     viewer first, then opens a new one bound to the new
-                #     scene_cfg/plan. Stays alive through execute/drop/perception
-                #     until the next cycle replaces it.
-                if args.viz:
-                    if vis is not None:
-                        try:
-                            vis.stop_viewer()
-                        except Exception as ve:
-                            print(f"[viz] previous viewer stop failed: {ve!r}")
-                    vis = ScenePlanVisualizer(scene_cfg, result,
-                                              port=args.port_viser,
-                                              hand=args.hand)
-                    vis.start_viewer(use_thread=True)
-                    print(f"[viz] http://localhost:{args.port_viser}")
 
                 # 4. Recording start (arm/hand + optional video).
                 raw_dir = str(cdir / "raw")

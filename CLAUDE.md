@@ -1,6 +1,6 @@
 # AutoDex
 
-Dexterous manipulation pipeline: perception → planning → execution.
+Dex manipulation pipeline: perception → plan → execute.
 
 ## Repository Structure
 
@@ -61,83 +61,83 @@ Visualization/              # Scene visualization & evaluation
 
 ## Key Conventions
 
-- **Local cache**: `~/video_cache/` mirrors network FS structure. Mapping: strip `/home/mingi/paradex1/capture/` prefix.
-- **Video format**: `.avi` throughout. Masks use MJPG codec. Depth uses FFV1 (lossless, uint16 mm encoded as BGR).
-- **Camera params**: `cam_param/intrinsics.json` + `extrinsics.json` per capture dir. Keyed by serial string.
-  - `intrinsics.json` values are dicts with `intrinsics_undistort`, `original_intrinsics`, `dist_params`, `width`, `height`.
-- **Capture dir layout**: `{base}/{obj_name}/{idx}/` with `videos/`, `cam_param/`, `depth/`, `obj_mask/`, etc.
-- **Model weights**: All in `autodex/perception/thirdparty/weights/`. Use `YOLOE_WEIGHTS` from `autodex.perception.mask` to reference.
+- **Local cache**: `~/video_cache/` mirror network FS. Map: strip `/home/mingi/paradex1/capture/` prefix.
+- **Video format**: `.avi` throughout. Mask=MJPG. Depth=FFV1 (lossless, uint16 mm as BGR).
+- **Camera params**: `cam_param/intrinsics.json` + `extrinsics.json` per capture dir. Key=serial string.
+  - `intrinsics.json` vals=dict w/ `intrinsics_undistort`, `original_intrinsics`, `dist_params`, `width`, `height`.
+- **Capture dir layout**: `{base}/{obj_name}/{idx}/` w/ `videos/`, `cam_param/`, `depth/`, `obj_mask/`, etc.
+- **Model weights**: all in `autodex/perception/thirdparty/weights/`. Ref via `YOLOE_WEIGHTS` from `autodex.perception.mask`.
 
 ## Stereo Depth Pipeline
 
-Two depth scripts exist:
+Two depth scripts:
 
-- **`batch_depth.py`**: Fixed camera pair (manual `--left_serial` / `--right_serial`). Proven, simple.
-- **`batch_depth_auto.py`**: Auto pair selection for all cameras. Uses rig-based adjacency grouping (focal_group × z_level, angle-sorted, MAX_ANGLE_GAP=40°).
+- **`batch_depth.py`**: fixed cam pair (manual `--left_serial` / `--right_serial`). Proven, simple.
+- **`batch_depth_auto.py`**: auto pair select all cams. Rig-based adjacency (focal_group × z_level, angle-sorted, MAX_ANGLE_GAP=40°).
 
 ### Stereo Rectification
 
-Both use `cv2.stereoRectify` to get R1/R2 rotation matrices.
-`src/process/depth.py` uses the **validation approach** (same as `stereo_rectify.py`):
-- Uses `f_orig = max(K_left[0,0], K_right[0,0])` instead of stereoRectify's `f_rect` (which can be degenerate for wide-baseline pairs).
+Both use `cv2.stereoRectify` → R1/R2 rot mat.
+`src/process/depth.py` use **validation approach** (same as `stereo_rectify.py`):
+- Use `f_orig = max(K_left[0,0], K_right[0,0])` not stereoRectify `f_rect` (degenerate for wide-baseline).
 - Oversized canvas → valid region → workspace crop → final P matrix.
-- Both left/right use the same P matrix (same f, cx, cy), preserving epipolar alignment.
+- Both L/R use same P (same f, cx, cy), preserve epipolar align.
 
 ### Stereo Rectification Cropping Rules (IMPORTANT)
 
-1. **Valid region**: Use UNION (`valid_l | valid_r`) — NEVER intersection, it cuts off the right camera's content.
-2. **Workspace crop**: Crop TO the fixed robot-frame bounding box, baked into the P matrix via `initUndistortRectifyMap` (one remap step, no intermediate full-size image).
-   - Fixed bounds in robot frame: `ws_min=[0.35, -0.30, 0.0]`, `ws_max=[0.80, 0.21, 0.4]`
-   - Same constants for every capture — determined once from charuco triangulation, NOT recomputed.
-   - Project 8 bbox corners via `C2R.npy` + extrinsics + R1/R2 into rectified space.
-   - Take UNION of both cameras' projections so the full bbox is visible in both views.
-3. **Same cx** for both cameras — no per-camera cx offset, no disparity correction needed.
-4. **Aspect ratio filter**: Skip pairs with ratio > 2.5:1 (degenerate wide-baseline pairs).
-5. **Objects must NEVER be cut off** — the bbox must fully contain the workspace.
+1. **Valid region**: UNION (`valid_l | valid_r`) — NEVER intersection, cut right cam content.
+2. **Workspace crop**: crop TO fixed robot-frame bbox, baked into P via `initUndistortRectifyMap` (one remap, no intermediate full-size).
+   - Fixed bounds robot frame: `ws_min=[0.35, -0.30, 0.0]`, `ws_max=[0.80, 0.21, 0.4]`
+   - Same const every capture — set once from charuco triangulation, NOT recomputed.
+   - Project 8 bbox corners via `C2R.npy` + extrinsics + R1/R2 to rectified space.
+   - UNION of both cams' projections so full bbox visible in both views.
+3. **Same cx** both cams — no per-cam cx offset, no disparity correction needed.
+4. **Aspect ratio filter**: skip pair ratio > 2.5:1 (degenerate wide-baseline).
+5. **Object NEVER cut off** — bbox must fully contain workspace.
 
 ### Disparity-to-Depth: Rectified Z vs Original Z
 
-**Critical**: The stereo formula `depth = f * B / disparity` gives Z in the **rectified** camera frame, not the original camera frame. When un-rectifying depth back to original pixel coordinates, you must divide by `rz` — the Z component of `R1 @ K_inv @ [u, v, 1]` for each original pixel `(u, v)`:
+**Critical**: stereo `depth = f * B / disparity` give Z in **rectified** cam frame, not original. When un-rectify depth back to original pixel coords, divide by `rz` — Z component of `R1 @ K_inv @ [u, v, 1]` per original pixel `(u, v)`:
 
 ```
 Z_orig = Z_rect / rz
 ```
 
-Without this, cameras with large R1 rotation (e.g. 65° for wide-baseline pairs) get ~30-50% depth error, causing massive cross-view reprojection misalignment. Cameras with small R1 rotation (~20°) appear fine because `rz ≈ 1`.
+Without this, cams w/ big R1 rot (e.g. 65° wide-baseline) get ~30-50% depth err, big cross-view reproj misalign. Cams w/ small R1 (~20°) look fine cuz `rz ≈ 1`.
 
-This bug was subtle because:
-- Per-camera depth colormaps look visually correct (relative depth ordering is preserved)
-- Self-reprojection (pixel → 3D → same pixel) is trivially perfect for any depth value
-- Only cross-view reprojection reveals the error, and the magnitude depends on R1 rotation angle
+Bug subtle cuz:
+- Per-cam depth colormap look OK (relative depth order preserved)
+- Self-reproj (pixel → 3D → same pixel) trivially perfect any depth val
+- Only cross-view reproj reveal err, magnitude depend on R1 angle
 
 ### Depth Debugging Checklist
 
-When stereo depth looks wrong, use **cross-view reprojection** to validate — NOT per-camera colormaps or self-reprojection (both hide errors). Steps:
-1. Pick a source camera with depth, backproject to 3D world using `K_src`, `T_src`
-2. Reproject 3D points to a different camera using `K_tgt`, `T_tgt`
-3. Overlay reprojected points on the target camera's image — features (checkerboard, objects) should align
-4. If misaligned: check `rz` correction, stereo pair quality (R1 rotation angle), baseline/focal length
+Stereo depth wrong → use **cross-view reproj** to validate — NOT per-cam colormap or self-reproj (both hide err). Steps:
+1. Pick src cam w/ depth, backproject 3D world via `K_src`, `T_src`
+2. Reproject 3D to diff cam via `K_tgt`, `T_tgt`
+3. Overlay reproj on target image — features (checkerboard, obj) must align
+4. Misalign → check `rz` correction, stereo pair quality (R1 angle), baseline/focal
 
-`batch_depth_auto.py --overlay_only` generates cross-view reprojection grids in `depth_overlay/`.
+`batch_depth_auto.py --overlay_only` gen cross-view reproj grids in `depth_overlay/`.
 
 ### Depth Encoding
 
-FFV1 codec, uint16 millimeters as BGR: `B = low_byte, G = high_byte, R = 0`.
+FFV1 codec, uint16 mm as BGR: `B = low_byte, G = high_byte, R = 0`.
 Use `encode_depth_uint16()` / `decode_depth_uint16()` from `autodex.perception.depth`.
 
 ## Conda Environments
 
-- `foundation_stereo`: FoundationStereo TRT depth (`tensorrt` + `pycuda` installed here)
+- `foundation_stereo`: FoundationStereo TRT depth (`tensorrt` + `pycuda` here)
 - `foundationpose`: FoundationPose, YOLOE
-- `sam3`: SAM3 segmentation, Depth-Anything-3
+- `sam3`: SAM3 seg, Depth-Anything-3
 
 ## Grasp Candidate Visualization
 
-`src/visualization/turntable_grasp.py` renders turntable videos of grasp candidates (object + Allegro hand) using Open3D offscreen renderer (EGL headless).
+`src/visualization/turntable_grasp.py` render turntable video of grasp candidates (obj + Allegro hand) via Open3D offscreen renderer (EGL headless).
 
 ### Data Sources
 
-- **Candidates**: `{candidate_path}/{version}/{obj_name}/{scene_type}/{scene_id}/{grasp_name}/` — contains `wrist_se3.npy`, `grasp_pose.npy`, `pregrasp_pose.npy`
+- **Candidates**: `{candidate_path}/{version}/{obj_name}/{scene_type}/{scene_id}/{grasp_name}/` — has `wrist_se3.npy`, `grasp_pose.npy`, `pregrasp_pose.npy`
 - **Setcover order**: `{code_path}/order/{version}/{obj_name}/setcover_order.json` — ranked grasp list (greedy set cover)
 - **Object meshes**: `{obj_path}/{obj_name}/raw_mesh/{obj_name}.obj`
 - **Object pose**: `{obj_path}/{obj_name}/scene/table/4.json`
@@ -145,12 +145,12 @@ Use `encode_depth_uint16()` / `decode_depth_uint16()` from `autodex.perception.d
 
 Paths from `rsslib.path`: `candidate_path=/home/mingi/RSS_2026/candidates`, `code_path=/home/mingi/RSS_2026`, `obj_path=/home/mingi/shared_data/RSS2026_Mingi/object/paradex`.
 
-### Setcover Versions (no duplicates except attached_container → use revalidate)
+### Setcover Versions (no dup except attached_container → use revalidate)
 
-- `revalidate`: 33 objects
-- `v2`: 21 objects (20 unique after dedup)
-- `v3`: 45 objects
-- Total: 98 unique objects
+- `revalidate`: 33 obj
+- `v2`: 21 obj (20 unique after dedup)
+- `v3`: 45 obj
+- Total: 98 unique obj
 
 ### Output Layout (episode-wise for HuggingFace/GitHub Pages)
 
@@ -173,23 +173,23 @@ python src/visualization/turntable_grasp.py --batch-all --top 100
 
 ### Camera Auto-framing
 
-Uses bounding sphere of combined object+robot mesh. Camera distance = `sphere_radius * padding / sin(effective_half_fov)`. Guarantees no clipping at any turntable angle.
+Use bounding sphere of combined obj+robot mesh. Cam dist = `sphere_radius * padding / sin(effective_half_fov)`. No clipping any turntable angle.
 
 ## Planning Validation
 
 ### Reachability Grid Search (`src/validation/planning/reachability_set.py`)
 
-Runs IK-only checks over a grid of (x_offset, z_rotation, tabletop_pose) per object.
+IK-only check over grid (x_offset, z_rotation, tabletop_pose) per obj.
 - Grid: x_offset [0.2–0.5, step 0.05] × z_rotation [0°–330°, step 30°] × all tabletop poses × 10 trials/point
-- Output: `outputs/reachability/{obj_name}/reachability_selected_100.json` (grid results) + `*_viz.json` (IK solutions for visualization)
-- 14 objects processed. IK is ~97% deterministic (all-or-nothing), ~3% partial at boundary configs.
+- Output: `outputs/reachability/{obj_name}/reachability_selected_100.json` (grid) + `*_viz.json` (IK sol viz)
+- 14 obj done. IK ~97% deterministic (all-or-nothing), ~3% partial at boundary configs.
 
 ### Reachability Viewer (`src/validation/planning/reachability_viewer.py`)
 
-Interactive viser viewer for reachability results. Two modes:
-- **Single**: Robot at IK qpos + object mesh + 5 grasp candidate hands (green=forward, red=backward). Sliders for pose, x_offset, z_rotation, IK solution #.
-- **Heatmap**: 1D row of color-coded spheres along x_offset (green=reachable, red=unreachable, yellow=partial). Z_rotation controlled by slider. Robot shown at INIT_STATE default pose. Object mesh shown offset in y for reference.
-- **Filter/Navigate**: Jump between Reachable/Unreachable/Partial points.
+Interactive viser viewer for reachability. Two modes:
+- **Single**: robot at IK qpos + obj mesh + 5 grasp candidate hands (green=fwd, red=bwd). Sliders for pose, x_offset, z_rotation, IK sol #.
+- **Heatmap**: 1D row color-coded spheres along x_offset (green=reach, red=unreach, yellow=partial). Z_rotation via slider. Robot at INIT_STATE default pose. Obj mesh shown offset in y for ref.
+- **Filter/Navigate**: jump between Reachable/Unreachable/Partial points.
 
 ```bash
 python src/validation/planning/reachability_viewer.py --port 8080
@@ -197,7 +197,7 @@ python src/validation/planning/reachability_viewer.py --port 8080
 
 ### Planning Success Rate (`src/validation/planning/success_rate.py`)
 
-Compares IK reachability vs full planning success. Loads IK-reachable points from `outputs/reachability/`, runs `planner.plan()` only on those. Breaks early on success (only retries on failure). Saves per-stage timing breakdown (all/success/fail) to JSON.
+Compare IK reachability vs full planning success. Load IK-reachable points from `outputs/reachability/`, run `planner.plan()` only on those. Break early on success (retry only on fail). Save per-stage timing breakdown (all/success/fail) to JSON.
 
 ```bash
 python src/validation/planning/success_rate.py --obj attached_container --version selected_100 --n_trials 1
@@ -209,73 +209,73 @@ Output: `outputs/planning_success_rate/{obj_name}/plan_vs_ik_{version}.json`
 
 - `TABLE_POSE_XYZ = [1.1, 0, -0.1]`, `TABLE_DIMS = [2, 3, 0.2]`
 - `INIT_STATE`: from `autodex.utils.robot_config` — xarm6 + allegro default joint config
-- Grasp candidates: `selected_100` version, 100 per object via `load_candidate()`
+- Grasp candidates: `selected_100` version, 100 per obj via `load_candidate()`
 - Backward filter: `wrist_se3[:, 0, 2] < 0.3`
 
 ## External Dependency: `rsslib` (legacy, being replaced)
 
-Old shared library at `~/RSS_2026/rsslib/`. Still imported by `src/`, `Visualization/`, and BODex scripts. **All core functionality already ported to `autodex/`:**
+Old shared lib `~/RSS_2026/rsslib/`. Still imported by `src/`, `Visualization/`, BODex scripts. **All core fn already ported to `autodex/`:**
 
-- `rsslib.path` → `autodex.utils.path` (identical functions, `project_dir` changed to `~/shared_data/AutoDex`)
-- `rsslib.conversion` → `autodex.utils.conversion` (identical: `cart2se3`, `se32cart`, `se32action`)
-- `rsslib.robot_config` → `autodex.utils.robot_config` (identical: `INIT_STATE`, `LINK6_TO_WRIST`)
+- `rsslib.path` → `autodex.utils.path` (same fn, `project_dir` → `~/shared_data/AutoDex`)
+- `rsslib.conversion` → `autodex.utils.conversion` (same: `cart2se3`, `se32cart`, `se32action`)
+- `rsslib.robot_config` → `autodex.utils.robot_config` (same: `INIT_STATE`, `LINK6_TO_WRIST`)
 - `rsslib.scene` → `autodex.utils.scene` (partial: `overlay_scene`, `get_scene_image_dict_template`)
-- `rsslib.curobo_util` → `autodex.planner.planner.GraspPlanner` (fully superseded — `CuroboPlanner`/`CuroboIkSolver`/`filter_collision`/`get_traj` are all methods on `GraspPlanner`)
-- `rsslib.planner` → `autodex.planner.planner` (superseded)
-- `rsslib.visualizer`, `rsslib.gui_player` — not yet ported (Viser GUI helpers)
+- `rsslib.curobo_util` → `autodex.planner.planner.GraspPlanner` (fully replace — `CuroboPlanner`/`CuroboIkSolver`/`filter_collision`/`get_traj` all methods on `GraspPlanner`)
+- `rsslib.planner` → `autodex.planner.planner` (replaced)
+- `rsslib.visualizer`, `rsslib.gui_player` — not yet ported (Viser GUI helper)
 
-Migration: mechanically replace `from rsslib.xxx import` → `from autodex.utils.xxx import` in `src/` scripts. BODex internal imports need separate handling (it's a forked cuRobo with its own `rsslib` refs).
+Migration: mech-replace `from rsslib.xxx import` → `from autodex.utils.xxx import` in `src/`. BODex internal import need separate handle (forked cuRobo w/ own `rsslib` ref).
 
 ## Grasp Generation: BODex (`src/grasp_generation/BODex/`)
 
-GPU-accelerated dexterous grasp generation built on a **forked NVIDIA cuRobo**. Optimizes Allegro hand joint angles + wrist pose for force-closure grasps with collision avoidance. See `src/grasp_generation/BODex/CLAUDE.md` for architecture details.
+GPU-accel dex grasp gen on **forked NVIDIA cuRobo**. Optimize Allegro joint angles + wrist pose for force-closure grasp w/ collision avoid. See `src/grasp_generation/BODex/CLAUDE.md` for arch detail.
 
 ## Grasp Pipeline: BODex → Sim Filter → Candidate → Selection
 
-BODex raw outputs go through sim validation and selection before planning. See `src/grasp_generation/sim_filter/CLAUDE.md` for details.
+BODex raw output → sim validate → select before plan. See `src/grasp_generation/sim_filter/CLAUDE.md`.
 
 ```
 bodex_outputs/ → MuJoCo sim eval → candidates/ → set cover selection → selected_100/
 ```
 
-Key data (currently at `~/RSS_2026/`): `candidates/{version}/`, `order/{version}/`, `candidates/selected_100/`.
+Key data (now at `~/RSS_2026/`): `candidates/{version}/`, `order/{version}/`, `candidates/selected_100/`.
 
 ## Perception Evaluation Pipeline (`src/validation/execution/eval_perception/`)
 
-Evaluates per-view 6D pose quality to select the best camera views.
-See `src/validation/execution/eval_perception/CLAUDE.md` for details.
+Eval per-view 6D pose quality to pick best cam views.
+See `src/validation/execution/eval_perception/CLAUDE.md`.
 
 ### CRITICAL: Reference Implementation
 
-**`/home/mingi/shared_data/_object_6d_tracking/`** is the reference (ground truth) pipeline. When writing perception code, ALWAYS read and follow the reference implementation first. Do NOT improvise or write from scratch.
+**`/home/mingi/shared_data/_object_6d_tracking/`** = ref (ground truth) pipeline. Write perception code → ALWAYS read+follow ref first. Do NOT improvise / write from scratch.
 
-Key reference files:
+Key ref files:
 - `run/models/depth_server.py` — DA3 depth: `DepthAnything3.from_pretrained()`, intrinsics + extrinsics, fallback on exception
 - `run/models/foundationpose_server.py` — FPose: `trimesh.load(process=False)`, downscale=0.5, `mask.astype(bool)`
-- `run/models/silhouette_server.py` — Differentiable silhouette optimization (200 iters, MSE + IoU loss, rotation 6d parameterization)
-- `run/run_object_6d_pipeline_distributed.py` — Full pipeline orchestration, NMS, visualization with `nvdiffrast_render`
+- `run/models/silhouette_server.py` — Differentiable sil opt (200 iter, MSE + IoU loss, rot 6d param)
+- `run/run_object_6d_pipeline_distributed.py` — Full orchestration, NMS, viz w/ `nvdiffrast_render`
 
 ### HARD RULES (learned from mistakes)
 
-1. **NEVER use `DepthAnything3(model_name=...)` — ALWAYS use `DepthAnything3.from_pretrained("depth-anything/DA3-LARGE")`**. The constructor creates random-init weights. `from_pretrained` loads actual trained weights.
-2. **NEVER omit extrinsics from DA3** — multi-view alignment with extrinsics gives correct metric depth. Without extrinsics, depth scale is wrong.
-3. **NEVER use `trimesh.load(force="mesh")`** for FoundationPose — use `process=False`. `force="mesh"` merges/deduplicates vertices (7944 vs 22743), changing the mesh geometry.
-4. **NEVER rewrite rendering code** — use `Utils.py`'s `nvdiffrast_render` and `make_mesh_tensors` directly. Import requires pytorch3d in the env.
-5. **When something doesn't work, read the reference code first** — don't blame external factors (DA3, extrinsics, calibration, xformers).
+1. **NEVER `DepthAnything3(model_name=...)` — ALWAYS `DepthAnything3.from_pretrained("depth-anything/DA3-LARGE")`**. Constructor = random-init weights. `from_pretrained` loads real trained weights.
+2. **NEVER omit extrinsics from DA3** — multi-view align w/ extrinsics → correct metric depth. No extrinsics → wrong scale.
+3. **NEVER `trimesh.load(force="mesh")`** for FoundationPose — use `process=False`. `force="mesh"` merges/dedup vertices (7944 vs 22743), change mesh geom.
+4. **NEVER rewrite render code** — use `Utils.py`'s `nvdiffrast_render` + `make_mesh_tensors` direct. Import need pytorch3d in env.
+5. **Thing not work → read ref code first** — no blame external (DA3, extrinsics, calib, xformers).
 
 ## Conda Environments (Updated)
 
 - `foundation_stereo`: FoundationStereo TRT (`tensorrt` + `pycuda`)
 - `foundationpose`: FoundationPose, YOLOE, pytorch3d, nvdiffrast
-- `sam3`: SAM3 segmentation
-- `dav3`: Depth-Anything-3 (separate env with all DA3 dependencies)
+- `sam3`: SAM3 seg
+- `dav3`: Depth-Anything-3 (separate env w/ all DA3 dep)
 
 ## Daemon Setup (Perception Pipeline)
 
 ### Current pipeline (FoundPose init only)
 
-`src/execution/run_auto.py` uses **`init_daemon`** on capture1-3, 5, 6 (gotrack_cu128 env).
-Start/stop/status are all wrapped by `scripts/init_daemons.sh`:
+`src/execution/run_auto.py` use **`init_daemon`** on capture1-3, 5, 6 (gotrack_cu128 env).
+Start/stop/status all wrap by `scripts/init_daemons.sh`:
 
 ```bash
 bash scripts/init_daemons.sh start
@@ -284,19 +284,19 @@ bash scripts/init_daemons.sh stop
 bash scripts/init_daemons.sh log capture1   # tail one PC's log
 ```
 
-Daemon code: `src/execution/daemon/init_daemon.py`. Ports: 5006 (mask PUB),
+Daemon: `src/execution/daemon/init_daemon.py`. Ports: 5006 (mask PUB),
 5007 (pose PUB), 6893 (control). Orchestrator: `autodex.perception.init_orchestrator.InitOrchestrator`.
 
 ### Legacy SAM3+FPose daemon setup (for `src/execution_prev/`)
 
-Only needed when running the old `src/execution_prev/run_auto.py` / `run_debug.py` /
-`run_demo.py`. The new pipeline does not use these.
+Only need when run old `src/execution_prev/run_auto.py` / `run_debug.py` /
+`run_demo.py`. New pipeline don't use.
 
 ### Architecture (legacy)
 
-- **Main PC** (mingi, RTX 3090): DA3/stereo depth + silhouette matching + planning
-- **capture1, 2, 3**: SAM3 daemons (ZMQ, port 5001)
-- **capture4, 5, 6**: FPose daemons (ZMQ, port 5003)
+- **Main PC** (mingi, RTX 3090): DA3/stereo depth + sil match + plan
+- **capture1, 2, 3**: SAM3 daemon (ZMQ, port 5001)
+- **capture4, 5, 6**: FPose daemon (ZMQ, port 5003)
 
 ### First-time setup on each capture PC
 
@@ -404,14 +404,14 @@ Output: `~/AutoDex/candidates/{hand}/v3_order/{obj}/setcover_order.json`
 
 ## Execution Pipeline (`src/execution/`)
 
-The current pipeline runs **FoundPose distributed init** (`InitOrchestrator` →
-capture1-3,5,6 `init_daemon`) for perception, then planning + execute on the robot.
-GoTrack tracking is **out of scope** here — perception is init-only, one shot per trial.
+Current pipeline run **FoundPose distributed init** (`InitOrchestrator` →
+capture1-3,5,6 `init_daemon`) for perception, then plan + exec on robot.
+GoTrack track = **out of scope** here — perception init-only, one shot per trial.
 
-The legacy SAM3+FPose distributed pipeline (with its own `perception_pipeline.py` +
-`perception_daemon.py` + `gotrack_daemon.py`) lives under `src/execution_prev/` for
-reference. Its imports were rewritten (`src.execution.*` → `src.execution_prev.*`) so
-it can still run side-by-side if needed.
+Legacy SAM3+FPose distrib pipeline (w/ own `perception_pipeline.py` +
+`perception_daemon.py` + `gotrack_daemon.py`) live under `src/execution_prev/` for
+ref. Imports rewritten (`src.execution.*` → `src.execution_prev.*`) so
+can still run side-by-side if needed.
 
 ```
 src/execution/
@@ -446,21 +446,14 @@ python src/execution/run_auto.py --obj brown_ramen --viz                # launch
 python src/execution/run_auto.py --obj brown_ramen --hand inspire_left  # left inspire hand
 ```
 
-`--hand` accepts `allegro` (default), `inspire`, `inspire_left`. The
-`inspire_left` hand uses `xarm_inspire_left.yml` (copied into
-`~/shared_data/AutoDex/content/configs/robot/` from `~/mcc_minimal/`).
+`--hand` accept `allegro` (default), `inspire`, `inspire_left`. `inspire_left` use `xarm_inspire_left.yml` (copy to `~/shared_data/AutoDex/content/configs/robot/` from `~/mcc_minimal/`).
 
-Each trial keeps the capture-PC stream running for init pipeline SHM access; it is
-toggled off → video recording → back on around the executor's execute window.
+Each trial keep capture-PC stream running for init pipeline SHM access; toggle off → vid record → back on around executor exec window.
 
 ### run_debug.py — Single trial, viser preview, GUI executor
 
-Same init pipeline as `run_auto.py`, but stops at the visualizer after planning
-so you can inspect the trajectory before committing. If you press `y` the
-trajectory runs through `RealExecutor(mode="gui")` (step-through GUI); `q`
-skips execution. Single trial only. No video / sync_generator / timestamp_monitor
-— stream stays on the whole time for the init pipeline. Saves to
-`~/shared_data/AutoDex/experiment/debug/...` by default (`--exp_name`).
+Same init pipeline as `run_auto.py`, but stop at visualizer after plan
+so can inspect traj before commit. Press `y` → traj run via `RealExecutor(mode="gui")` (step-through GUI); `q` skip exec. Single trial only. No video / sync_generator / timestamp_monitor — stream stay on whole time for init pipeline. Save to `~/shared_data/AutoDex/experiment/debug/...` default (`--exp_name`).
 
 ```bash
 python src/execution/run_debug.py --obj attached_container
@@ -470,22 +463,21 @@ python src/execution/run_debug.py --obj brown_ramen --scene wall --wall_angle 0
 
 ### Legacy `src/execution_prev/`
 
-`run_auto.py`, `run_debug.py`, `run_demo.py`, `run_perception.py` from the old
-SAM3+FPose pipeline still live there. They need the legacy daemons (see Daemon
-Setup below).
+`run_auto.py`, `run_debug.py`, `run_demo.py`, `run_perception.py` from old
+SAM3+FPose pipeline still live there. Need legacy daemon (see Daemon Setup below).
 
 ### Key Design Decisions
 
-- **Candidate result tracking**: `result.json` saved in candidate dir (`candidates/allegro/selected_100/{obj}/{scene}/{id}/{grasp}/`). `load_candidate` skips candidates with existing results (table mode). Other scenes (`--success_only`, wall, shelf, cluttered) don't skip/save to candidates.
-- **Cylinder symmetry**: Objects with y-axis symmetry (defined in `CYLINDER_OBJECTS` list: pepper_tuna, pepper_tuna_light, pepsi, pepsi_light) get their rotation snapped to the tabletop pose whose y-axis direction best matches the estimated pose. Only rotmat is replaced, translation preserved. Tabletop poses at `{obj_path}/{obj}/processed_data/info/tabletop/*.npy`. NOTE: cylinder snap had multiple bugs (wrong frame, wrong tabletop selection causing standing→lying). Some early cylinder experiments (pepper_tuna, pepper_tuna_light success_only) may have bad data from buggy snap.
-- **Table surface snap**: `_snap_z_to_table` ensures mesh bottom ≥ TABLE_SURFACE_Z (0.039m). Prevents hand from going below table. NOTE: changed from 0.037→0.043→0.045→0.042→0.039 on 2026-03-27. Higher values caused planning failures (too much lift), lower values caused table scratching. 0.039 works well — revisit if issues recur.
-- **Lift speed**: `_move_cartesian` lift uses `vel_scale=1/1.5` (slower than default). Changed 2026-03-30 — default was too fast, causing drops.
-- **Sil loss threshold**: Perception returns None if silhouette matching loss > 0.003 (unreliable pose).
-- **IK retract_config**: IK solver uses `retract_config=INIT_STATE` so joint solutions stay near start configuration. Fixes joint 6 wrapping issue (IK returning values in [-2π, 2π]).
-- **Trajectory smoothing**: Uses `get_interpolated_plan()` instead of raw `optimized_plan` (64 waypoints → dense interpolated trajectory). Allegro uses CUBIC interpolation (jerk minimization), Inspire uses LINEAR_CUDA. Changed 2026-04-03 — raw optimized_plan had jerky motion.
-- **Per-hand planner config**: `GraspPlanner(hand=)` selects YAML configs, collision_activation_distance, num_trajopt_seeds, and interpolation_type per hand. Allegro: `xarm_allegro.yml`, act_dist=0.01, 32 seeds, CUBIC. Inspire (right): `xarm_inspire.yml`, act_dist=0.002, 32 seeds, LINEAR_CUDA. Inspire_left: `xarm_inspire_left.yml` + `inspire_left_floating.yml`, same numerics as inspire. Joint order is right/left-mirrored only in *names*, so `INSPIRE_INIT` is shared between inspire and inspire_left.
-- **Inspire hand conversion**: `_convert_inspire` maps radians → 0-1000 controller units with joint reordering (cuRobo order: thumb_yaw/pitch/index/middle/ring/pinky → controller order: pinky/ring/middle/index/thumb_pitch/thumb_yaw). Joints are normalized by per-joint limits `[1.15, 0.55, 1.6, 1.6, 1.6, 1.6]`, inverted (1000=fully open, 0=fully closed).
-- **retract_config fix**: `xarm_allegro.yml` retract_config finger joints updated to `ALLEGRO_INIT` values — old values had thumb base violating joint limit [0.263, 1.396]. Code uses `robot_config.py` INIT_STATE instead of YAML retract_config for `plan_single_js` start state.
+- **Candidate result tracking**: `result.json` saved in candidate dir (`candidates/allegro/selected_100/{obj}/{scene}/{id}/{grasp}/`). `load_candidate` skip candidate w/ existing result (table mode). Other scene (`--success_only`, wall, shelf, cluttered) don't skip/save to candidates.
+- **Cylinder symmetry**: obj w/ y-axis symmetry (in `CYLINDER_OBJECTS`: pepper_tuna, pepper_tuna_light, pepsi, pepsi_light) → rot snap to tabletop pose whose y-axis best match est pose. Only rotmat replaced, trans preserved. Tabletop poses at `{obj_path}/{obj}/processed_data/info/tabletop/*.npy`. NOTE: cylinder snap had multi bug (wrong frame, wrong tabletop sel → standing→lying). Some early cylinder exp (pepper_tuna, pepper_tuna_light success_only) may have bad data from buggy snap.
+- **Table surface snap**: `_snap_z_to_table` ensure mesh bottom ≥ TABLE_SURFACE_Z (0.039m). Prevent hand below table. NOTE: changed 0.037→0.043→0.045→0.042→0.039 on 2026-03-27. Higher val → plan fail (too much lift), lower → table scratch. 0.039 works — revisit if issue recur.
+- **Lift speed**: `_move_cartesian` lift use `vel_scale=1/1.5` (slower than default). Changed 2026-03-30 — default too fast, cause drop.
+- **Sil loss threshold**: perception return None if sil match loss > 0.003 (unreliable pose).
+- **IK retract_config**: IK solver use `retract_config=INIT_STATE` so joint sol stay near start config. Fix joint 6 wrap issue (IK return val in [-2π, 2π]).
+- **Trajectory smoothing**: use `get_interpolated_plan()` not raw `optimized_plan` (64 waypoint → dense interp traj). Allegro=CUBIC interp (jerk min), Inspire=LINEAR_CUDA. Changed 2026-04-03 — raw optimized_plan had jerky motion.
+- **Per-hand planner config**: `GraspPlanner(hand=)` select YAML config, collision_activation_distance, num_trajopt_seeds, interp_type per hand. Allegro: `xarm_allegro.yml`, act_dist=0.01, 32 seeds, CUBIC. Inspire (right): `xarm_inspire.yml`, act_dist=0.002, 32 seeds, LINEAR_CUDA. Inspire_left: `xarm_inspire_left.yml` + `inspire_left_floating.yml`, same numerics as inspire. Joint order right/left-mirror only in *names*, so `INSPIRE_INIT` shared btw inspire + inspire_left.
+- **Inspire hand conversion**: `_convert_inspire` map rad → 0-1000 controller unit w/ joint reorder (cuRobo order: thumb_yaw/pitch/index/middle/ring/pinky → ctrl order: pinky/ring/middle/index/thumb_pitch/thumb_yaw). Joints norm by per-joint limit `[1.15, 0.55, 1.6, 1.6, 1.6, 1.6]`, invert (1000=open, 0=closed).
+- **retract_config fix**: `xarm_allegro.yml` retract_config finger joints → `ALLEGRO_INIT` vals — old vals had thumb base violate joint limit [0.263, 1.396]. Code use `robot_config.py` INIT_STATE not YAML retract_config for `plan_single_js` start state.
 
 ### Experiment Storage Layout
 
@@ -501,7 +493,7 @@ Setup below).
 └── cluttered_success_only/allegro/{obj}/{timestamp}/
 ```
 
-Each experiment dir contains: `raw/`, `images/`, `cam_param/`, `pose_world.npy`, `pose_overlay/`, `plan/`, `result.json`.
+Each exp dir has: `raw/`, `images/`, `cam_param/`, `pose_world.npy`, `pose_overlay/`, `plan/`, `result.json`.
 
 ### Scene Obstacles (`autodex/planner/obstacles.py`)
 
@@ -512,19 +504,19 @@ Each experiment dir contains: `raw/`, `images/`, `cam_param/`, `pose_world.npy`,
 
 ### Known Issues / Fixes Applied
 
-- **URDF joint 6 limits**: `xarm_allegro.urdf` has ±2π, real xarm6 is ±π. IK can return values outside ±π. Fixed via `retract_config=INIT_STATE` in IK solver (not URDF change).
-- **Allegro collision sphere**: `spheres/allegro.yml` base_link had radius 0.5 (typo, should be 0.015). Fixed.
-- **moviepy import**: DA3 `gs.py` imports `moviepy.editor` which doesn't exist in moviepy 2.x. Fixed with try/except.
-- **PySpin version**: Must match Spinnaker SDK version (4.3.0.189). PySpin 4.2 causes symbol errors.
-- **numpy version**: PySpin 4.3 requires numpy<2.
-- **FPose daemon mesh**: Pipeline `__init__` must send mesh/obj_name to FPose daemons. Daemon supports `obj_name` lookup from NAS (`~/shared_data/object_6d/data/mesh/{obj}/`).
+- **URDF joint 6 limits**: `xarm_allegro.urdf` has ±2π, real xarm6 = ±π. IK can return val outside ±π. Fixed via `retract_config=INIT_STATE` in IK solver (no URDF change).
+- **Allegro collision sphere**: `spheres/allegro.yml` base_link had rad 0.5 (typo, should be 0.015). Fixed.
+- **moviepy import**: DA3 `gs.py` import `moviepy.editor` not in moviepy 2.x. Fixed w/ try/except.
+- **PySpin version**: must match Spinnaker SDK ver (4.3.0.189). PySpin 4.2 → symbol err.
+- **numpy version**: PySpin 4.3 need numpy<2.
+- **FPose daemon mesh**: pipeline `__init__` must send mesh/obj_name to FPose daemon. Daemon support `obj_name` lookup from NAS (`~/shared_data/object_6d/data/mesh/{obj}/`).
 
 ### Reference
 
-`~/RSS_2026/planner/inference/train/run_auto_v2.py` is the reference implementation. All execution sequences (init → approach → pregrasp → grasp → squeeze → lift → release) match this reference.
+`~/RSS_2026/planner/inference/train/run_auto_v2.py` = ref impl. All exec seq (init → approach → pregrasp → grasp → squeeze → lift → release) match this ref.
 
 ## Ongoing Refactoring
 
-`src/process/` scripts have heavy code duplication with `autodex/perception/`.
-Plan: consolidate core logic into `autodex/`, make `src/process/` thin CLI wrappers.
+`src/process/` scripts have heavy code dup w/ `autodex/perception/`.
+Plan: consolidate core logic into `autodex/`, make `src/process/` thin CLI wrapper.
 See `autodex/perception/CLAUDE.md` for detailed plan.

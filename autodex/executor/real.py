@@ -469,10 +469,14 @@ class RealExecutor:
         self.arm.start(os.path.join(save_dir, "arm"))
 
     def stop_recording(self):
-        # Idempotent: each controller's .stop() will crash if save_path is None
-        # (i.e. recording was never started or already stopped). Guard each.
+        # Idempotent: each controller's .stop() crashes if its save-path attr is
+        # None (recording never started / already stopped). Guard each.
+        # xarm uses `save_path`; inspire/allegro use `capture_path` — without
+        # the second check, hand.stop() never fired and only the last cycle's
+        # data persisted (via hand.end() at process shutdown).
         for ctrl in (self.arm, self.hand):
-            if getattr(ctrl, "save_path", None) is not None:
+            if (getattr(ctrl, "save_path", None) is not None
+                    or getattr(ctrl, "capture_path", None) is not None):
                 ctrl.stop()
 
     def _log_state(self, state):
@@ -501,7 +505,8 @@ class RealExecutor:
             startup_blank_s=startup_blank_s, dt=self.dt,
         )
 
-    def execute(self, plan_result: PlanResult, lift_height: float = 0.10):
+    def execute(self, plan_result: PlanResult, lift_height: float = 0.10,
+                skip_lift: bool = False):
         """
         Execute: init -> approach -> pregrasp -> grasp -> squeeze -> lift.
         State timestamps stored in self.state_timestamps.
@@ -510,6 +515,11 @@ class RealExecutor:
         Place (descend) is now a separate `place(plan_result, ...)` call so
         callers can do work (e.g. capture label image) while the object is
         held up.
+
+        ``skip_lift=True`` stops after the squeeze step (no lift). Use this
+        when the caller wants to perform a joint-space lift via the planner
+        (avoids ``_move_cartesian`` / ``set_servo_cartesian_aa`` kinematic-
+        error spam at extreme wrist orientations).
         """
         if not plan_result.success:
             print("Planning failed — nothing to execute.")
@@ -539,15 +549,15 @@ class RealExecutor:
                 f"— arm not at XARM_INIT, refusing to approach. "
                 f"final_qpos={self.arm.get_data()['qpos'].round(3)}"
             )
-        # Threshold raised from 15→25 Nm because free-space approach motion
+        # Threshold raised 15→25→30→50 Nm because free-space approach motion
         # naturally produces tau_dev ~20Nm on joint 2 (shoulder) from inertia
         # + Coriolis effects the tau_model under-predicts. False positives
         # were aborting trials before any actual contact.
-        monitor = self._make_monitor(thresh_nm=25.0, sustained_ticks=50)
+        monitor = self._make_monitor(thresh_nm=50.0, sustained_ticks=50)
         print("[executor] warming up approach contact monitor (1s static)...")
         monitor.warmup(seconds=1.0)
         print(f"[executor] approach baseline tau = {monitor._baseline.round(2)}  "
-              f"(thresh=25Nm, sustained=0.5s)")
+              f"(thresh=50Nm, sustained=0.5s)")
 
         # 2. Approach trajectory (contact-monitored).
         self._log_state("approach")
@@ -568,6 +578,10 @@ class RealExecutor:
             s_hand = g_hand * (1 + i / 5) - pg_hand * (i / 5)
             self._move_hand(s_hand)
             time.sleep(0.01)
+
+        if skip_lift:
+            self._log_state("squeeze_done")
+            return s_hand
 
         # 6. Lift — no contact monitor: arm is now carrying the object so the
         #    empty-arm baseline is invalid for tau_dev. place() does its own

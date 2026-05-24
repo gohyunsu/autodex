@@ -27,7 +27,7 @@ def get_object_mesh(obj_name):
     return mesh
 
 
-def load_candidate(obj_name, obj_pose, version, shuffle=True, skip_done=True, success_only=False, hand="allegro"):
+def load_candidate(obj_name, obj_pose, version, shuffle=True, skip_done=True, success_only=False, hand="allegro", scene_id=None):
     """Load all grasp candidates under ``{candidates}/{hand}/{version}/{obj}``.
 
     Supports both layouts (auto-detected by walking until ``wrist_se3.npy`` is found):
@@ -35,6 +35,8 @@ def load_candidate(obj_name, obj_pose, version, shuffle=True, skip_done=True, su
         flat:   ``{obj}/{scene_id}/{grasp_idx}/wrist_se3.npy``
 
     In the flat case the returned scene_info has ``scene_type=""``.
+
+    If ``scene_id`` is given, only grasps whose dir name matches are kept.
     """
     wrist_se3_list = []
     pregrasp_pose_list = []
@@ -61,12 +63,15 @@ def load_candidate(obj_name, obj_pose, version, shuffle=True, skip_done=True, su
         rel = os.path.relpath(base, candidate_obj_path)
         parts = rel.split(os.sep)
         if len(parts) == 3:
-            scene_type, scene_id, grasp_idx = parts
+            scene_type, scene_id_dir, grasp_idx = parts
         elif len(parts) == 2:
             scene_type = ""
-            scene_id, grasp_idx = parts
+            scene_id_dir, grasp_idx = parts
         else:
             # Unexpected depth — skip.
+            continue
+
+        if scene_id is not None and scene_id_dir != scene_id:
             continue
 
         result_path = os.path.join(base, "result.json")
@@ -87,7 +92,7 @@ def load_candidate(obj_name, obj_pose, version, shuffle=True, skip_done=True, su
         grasp_pose_list.append(np.load(grasp_file) if os.path.exists(grasp_file) else pregrasp)
         wrist_se3_obj = np.load(os.path.join(base, "wrist_se3.npy"))
         wrist_se3_list.append(obj_pose @ wrist_se3_obj)
-        scene_info.append((scene_type, scene_id, grasp_idx))
+        scene_info.append((scene_type, scene_id_dir, grasp_idx))
 
     wrist_se3 = np.array(wrist_se3_list)
     grasp_pose = np.array(grasp_pose_list)

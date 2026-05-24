@@ -8,6 +8,17 @@ import torch
 
 os.environ['TORCH_CUDA_ARCH_LIST'] = '8.6'
 
+
+def _snap_joint6(q: float, cur: float, lo: float = -np.pi, hi: float = np.pi) -> float:
+    """Pick the equivalent angle (q + k*2π) inside [lo, hi] that is
+    closest to ``cur``. Falls back to wrap if cur itself is outside."""
+    candidates = [q + k * 2.0 * np.pi for k in (-1, 0, 1)]
+    valid = [c for c in candidates if lo - 1e-6 <= c <= hi + 1e-6]
+    if valid:
+        return min(valid, key=lambda c: abs(c - cur))
+    # cur out of range — wrap to [-π, π]
+    return ((q + np.pi) % (2.0 * np.pi)) - np.pi
+
 from curobo.util_file import load_yaml
 from curobo.types.base import TensorDeviceType
 from curobo.types.math import Pose
@@ -18,6 +29,8 @@ from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
 from curobo.geom.sdf.world import CollisionQueryBuffer
 from curobo.util.trajectory import InterpolateType
+from curobo.util.logger import setup_curobo_logger
+setup_curobo_logger("warning")
 
 from autodex.utils.path import robot_configs_path, load_candidate, project_dir
 from autodex.utils.conversion import se32action, cart2se3
@@ -93,8 +106,8 @@ class GraspPlanner:
 
     HAND_CONFIGS = {
         "allegro":      ("xarm_allegro.yml",      "allegro_floating.yml",      0.01,  32, InterpolateType.CUBIC),
-        "inspire":      ("xarm_inspire.yml",      "inspire_floating.yml",      0.002, 32, InterpolateType.LINEAR_CUDA),
-        "inspire_left": ("xarm_inspire_left.yml", "inspire_left_floating.yml", 0.002, 32, InterpolateType.LINEAR_CUDA),
+        "inspire":      ("xarm_inspire.yml",      "inspire_floating.yml",      0.0, 32, InterpolateType.LINEAR_CUDA),
+        "inspire_left": ("xarm_inspire_left.yml", "inspire_left_floating.yml", 0.0, 32, InterpolateType.LINEAR_CUDA),
     }
 
     def __init__(self, robot_cfg_path: Optional[str] = None, hand_cfg_path: Optional[str] = None,
@@ -356,12 +369,16 @@ class GraspPlanner:
         self._ik_solver = IKSolver(config)
 
     def solve_ik(self, scene_cfg: dict, obj_name: str, grasp_version: str,
-                 seed: Optional[int] = None, hand: str = "allegro"):
+                 seed: Optional[int] = None, hand: str = "allegro",
+                 scene_id: Optional[str] = None):
         """
         IK-only reachability check for all grasp candidates.
 
         Skips hand-object collision check (hand is supposed to be near the object).
         Only applies backward filter. IK solver handles arm-scene collision internally.
+
+        ``scene_id`` (str) restricts loaded candidates to the matching tabletop
+        scene_id (sorted index), same convention as ``planner.plan``.
 
         Returns:
             dict with per-candidate success, qpos, and timing.
@@ -374,7 +391,8 @@ class GraspPlanner:
 
         t0 = _time.time()
         obj_pose = cart2se3(scene_cfg["mesh"]["target"]["pose"])
-        wrist_se3, pregrasp, grasp, scene_info = load_candidate(obj_name, obj_pose, grasp_version, hand=hand)
+        wrist_se3, pregrasp, grasp, scene_info = load_candidate(
+            obj_name, obj_pose, grasp_version, hand=hand, scene_id=scene_id)
         t_load = _time.time() - t0
 
         t0 = _time.time()
@@ -413,7 +431,17 @@ class GraspPlanner:
                         [chunk_poses, np.tile(chunk_poses[:1], (pad, 1, 1))], axis=0)
 
                 goal = _to_curobo_pose(chunk_poses, self._tensor_args.device)
-                result = self._ik_solver.solve_batch(goal)
+                # Retract toward init_state so IK solutions stay near start
+                # config — matches planner.plan() so the subsequent
+                # plan_single_js(INIT_STATE → ik_qpos) has a short, mostly
+                # collision-free distance to cover.
+                B_padded = chunk_poses.shape[0]
+                retract = torch.tensor(
+                    self._init_state, dtype=torch.float32,
+                    device=self._tensor_args.device,
+                ).unsqueeze(0).repeat(B_padded, 1)
+                result = self._ik_solver.solve_batch(
+                    goal, retract_config=retract)
                 succ = result.success.cpu().numpy()[:B]
                 q_sol = result.solution.cpu().numpy()[:B]
 
@@ -426,11 +454,38 @@ class GraspPlanner:
                         arm_q = q_sol[i, :6].copy()
                         # Snap joint 6 to nearest equivalent angle to init_state
                         # IK can return any angle in [-2π, 2π]; pick closest to start
-                        diff = arm_q[5] - self._init_state[5]
-                        arm_q[5] -= np.round(diff / (2 * np.pi)) * 2 * np.pi
+                        arm_q[5] = _snap_joint6(arm_q[5], self._init_state[5])
                         ik_qpos[idx, :6] = arm_q
                         ik_qpos[idx, 6:] = pregrasp[idx]
         t_ik = _time.time() - t0
+
+        # Lift IK check: verify z+10cm pose is reachable — mirrors
+        # planner.plan() so candidates that would hit joint limit during a
+        # short lift are filtered out here.
+        LIFT_HEIGHT_CHECK = 0.10
+        ik_valid_pre = np.where(ik_success)[0]
+        if len(ik_valid_pre) > 0:
+            lift_poses = wrist_se3[ik_valid_pre].copy()
+            lift_poses[:, 2, 3] += LIFT_HEIGHT_CHECK
+            for chunk_start in range(0, len(ik_valid_pre), self.BATCH_SIZE):
+                chunk = ik_valid_pre[chunk_start : chunk_start + self.BATCH_SIZE]
+                chunk_poses = lift_poses[chunk_start : chunk_start + len(chunk)]
+                B = len(chunk_poses)
+                if B < self.BATCH_SIZE:
+                    pad = self.BATCH_SIZE - B
+                    chunk_poses = np.concatenate(
+                        [chunk_poses, np.tile(chunk_poses[:1], (pad, 1, 1))],
+                        axis=0)
+                goal = _to_curobo_pose(chunk_poses, self._tensor_args.device)
+                lift_res = self._ik_solver.solve_batch(goal)
+                lift_succ = lift_res.success.cpu().numpy()[:B]
+                for i, idx in enumerate(chunk):
+                    if not lift_succ[i]:
+                        ik_success[idx] = False
+            n_lift_fail = len(ik_valid_pre) - int(ik_success.sum())
+            if n_lift_fail > 0:
+                print(f"[planner] solve_ik lift IK check: {n_lift_fail} "
+                      f"candidates failed (z+{LIFT_HEIGHT_CHECK}m unreachable)")
 
         timing = {
             "load_candidates_s": round(t_load, 3),
@@ -583,11 +638,26 @@ class GraspPlanner:
 
         goal = _to_curobo_pose(cand_padded, self._tensor_args.device)
 
-        # Retract toward current arm qpos so IK picks the closest solution.
+        # Caller is responsible for assembling current_qpos with the correct
+        # DOF (12 for inspire, 22 for allegro).
+        cur_full = np.asarray(current_qpos, dtype=np.float32)
+        if len(cur_full) != len(self._init_state):
+            info["reason"] = (
+                f"current_qpos DOF {len(cur_full)} != expected "
+                f"{len(self._init_state)} (arm 6 + hand "
+                f"{len(self._init_state) - 6})"
+            )
+            return None, info
+        B_padded = cand_padded.shape[0]
+        # Retract toward init_state (mirrors plan() at L1043). Using cur_full
+        # as retract has been observed to make cuRobo's solve_batch return
+        # success=False on ALL yaw candidates even when valid solutions exist
+        # (e.g. lift's IK trivially reachable from cur_full=lift_end_qpos).
+        # We still pick the IK solution closest to current_qpos below, so the
+        # bias toward "minimal motion" is preserved without relying on retract.
         retract = torch.tensor(
-            np.asarray(current_qpos[:6], dtype=np.float32),
-            dtype=torch.float32, device=self._tensor_args.device,
-        )
+            self._init_state, dtype=torch.float32, device=self._tensor_args.device,
+        ).unsqueeze(0).repeat(B_padded, 1)
         result = self._ik_solver.solve_batch(goal, retract_config=retract)
         succ = result.success.cpu().numpy()[:B]
         q_sol = result.solution.cpu().numpy()[:B]
@@ -596,29 +666,26 @@ class GraspPlanner:
         info["n_ik_success"] = int(succ.sum())
         info["ik_solve_s"] = round(_time.time() - t0, 3)
 
-        # 4. Pick the IK solution closest to current arm qpos (joint-6 wrap).
-        best_arm_q = None
-        best_dist = np.inf
-        best_idx = -1
+        # 4. Sort IK-feasible yaw solutions by closeness to current arm.
+        cur_arm = np.asarray(current_qpos[:6])
+        feasible_arms = []   # list of (yaw_idx, arm_q, dist)
         for i in range(B):
             if not succ[i]:
                 continue
             arm_q = q_sol[i, :6].copy()
-            diff = arm_q[5] - current_qpos[5]
-            arm_q[5] -= np.round(diff / (2.0 * np.pi)) * 2.0 * np.pi
-            dist = float(np.linalg.norm(arm_q - np.asarray(current_qpos[:6])))
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = i
-                best_arm_q = arm_q
-        info["best_yaw_idx"] = int(best_idx)
-        info["best_arm_dist_rad"] = float(best_dist)
+            arm_q[5] = _snap_joint6(arm_q[5], current_qpos[5])
+            dist = float(np.linalg.norm(arm_q - cur_arm))
+            feasible_arms.append((i, arm_q, dist))
+        feasible_arms.sort(key=lambda t: t[2])
 
-        if best_arm_q is None:
+        if len(feasible_arms) == 0:
             info["reason"] = "no_ik_feasible_among_yaw_candidates"
             return None, info
 
-        # 5. plan_single_js for the full 22-DOF traj (hand held constant).
+        info["best_yaw_idx"] = int(feasible_arms[0][0])
+        info["best_arm_dist_rad"] = float(feasible_arms[0][2])
+
+        # 5. plan_single_js: try yaw candidates in order until one succeeds.
         t1 = _time.time()
         start_full = np.asarray(current_qpos, dtype=np.float32)
         n_hand = len(self._init_state) - 6
@@ -628,15 +695,250 @@ class GraspPlanner:
                 f"hold_hand_qpos len={len(hand_held)} != expected {n_hand}"
             )
             return None, info
-        goal_full = np.concatenate([best_arm_q.astype(np.float32), hand_held])
-        ok, traj = self._refine_fingers(start_full, goal_full)
+
+        n_plan_attempts = 0
+        for yaw_i, arm_q, dist in feasible_arms:
+            goal_full = np.concatenate(
+                [arm_q.astype(np.float32), hand_held])
+            n_plan_attempts += 1
+            ok, traj = self._refine_fingers(start_full, goal_full)
+            if ok:
+                info["plan_s"] = round(_time.time() - t1, 3)
+                info["plan_success"] = True
+                info["chosen_yaw_idx"] = int(yaw_i)
+                info["chosen_arm_dist_rad"] = float(dist)
+                info["goal_qpos"] = goal_full.tolist()
+                info["n_plan_attempts"] = n_plan_attempts
+                return traj, info
+
         info["plan_s"] = round(_time.time() - t1, 3)
-        if not ok:
-            info["reason"] = "plan_single_js_failed"
+        info["reason"] = (
+            f"plan_single_js_failed_all_{len(feasible_arms)}_yaw")
+        info["n_plan_attempts"] = n_plan_attempts
+        return None, info
+
+    def plan_obj_placement(self,
+                            scene_lift: dict,
+                            current_qpos: np.ndarray,
+                            T_obj_in_wrist: np.ndarray,
+                            R_target_obj_world: np.ndarray,
+                            obj_target_pos_world: np.ndarray,
+                            hold_hand_qpos: np.ndarray,
+                            x_grid: np.ndarray,
+                            yaw_grid: np.ndarray,
+                            y_grid: np.ndarray = None,
+                            cyl_yaw_grid: np.ndarray = None,
+                            skip_plan: bool = False,
+                            ) -> tuple:
+        """Search (x, yaw) for an IK-feasible placement and plan to it.
+
+        Replaces ``plan_wrist_reorient`` for the "set the held obj down at
+        target orientation, anywhere reachable" case. For each (x, yaw) in
+        the grid, builds an obj target pose with rotation
+        ``Rz(yaw) @ R_target_obj_world`` at position
+        ``(x, obj_target_pos_world[1], obj_target_pos_world[2])`` (y/z fixed),
+        computes the required wrist pose via ``inv(T_obj_in_wrist)``, and
+        batch-IKs all candidates. Picks the IK-feasible candidate whose arm
+        config is closest to ``current_qpos[:6]`` in joint space, then runs
+        ``plan_single_js`` from ``current_qpos`` to that arm config holding
+        ``hold_hand_qpos`` throughout.
+
+        Args:
+            scene_lift: world for collision (held mesh stripped; see
+                        ``plan_wrist_reorient``).
+            current_qpos: (n_dof,) arm + hand qpos at search start (e.g.
+                          right after lift).
+            T_obj_in_wrist: (4, 4) constant obj-in-wrist transform measured
+                            at grasp time.
+            R_target_obj_world: (3, 3) target obj rotation in WORLD frame.
+            obj_target_pos_world: (3,) target obj position in WORLD frame.
+                                  Only y and z are used; x is searched.
+            hold_hand_qpos: (n_hand,) finger config to hold throughout.
+            x_grid: (Nx,) world-frame x values to try.
+            yaw_grid: (Nyaw,) yaw rotations around obj's vertical axis.
+            cyl_yaw_grid: optional (Ncyl,) rotations about the object's local
+                          symmetry axis (``cyl_axis_local``) applied IN OBJECT
+                          FRAME before world yaw, i.e. final rotation is
+                          ``Rz(yaw) @ R_target @ R_axis(cyl_axis_local, cyl_yaw)``.
+                          Use for cylinder-symmetric objects whose appearance is
+                          invariant under rotation about ``cyl_axis_local``.
+                          ``None`` (default) → singleton ``[0.0]`` (no extra DoF).
+            cyl_axis_local: (3,) unit axis in object frame. Required when
+                            ``cyl_yaw_grid`` is provided. For CYLINDER_OBJECTS
+                            this is the object's local +Y axis ``[0, 1, 0]``.
+            skip_plan: if True, run only the (x, yaw) IK feasibility check
+                       and return ``(None, info)`` with the chosen-best info
+                       set but without calling plan_single_js. Use for cheap
+                       pre-flight reachability checks before committing to
+                       a grasp (~0.1s vs ~1-2s with plan_single_js).
+
+        Returns ``(traj or None, info_dict)`` with keys ``chosen_x``,
+        ``chosen_yaw``, ``T_wrist_target`` (chosen or placeholder for viz),
+        ``n_feasible``, ``n_candidates``, ``reason`` (on fail).
+        """
+        # 1. World setup — motion_gen + IK on table-only scene.
+        world_cfg = _to_curobo_world(scene_lift)
+        if self._motion_gen is None:
+            self._init_motion_gen(world_cfg)
+        elif self._world_structure_changed(world_cfg):
+            self._update_world(world_cfg)
+        else:
+            self._update_target_pose_only(world_cfg)
+        self._cached_world = world_cfg
+
+        world_cfg_no_target = dict(world_cfg)
+        world_cfg_no_target["mesh"] = {}
+        if self._ik_solver is None:
+            self._init_ik_solver(world_cfg_no_target)
+        else:
+            self._ik_solver.update_world(
+                WorldConfig.from_dict(world_cfg_no_target))
+
+        # 2. Build (x, y, yaw, cyl_yaw) candidate wrist targets.
+        if y_grid is None:
+            y_grid = np.array([float(obj_target_pos_world[1])])
+        if cyl_yaw_grid is None:
+            cyl_yaw_grid = np.array([0.0])
+            R_cyl_list = [np.eye(3)]
+        else:
+            if cyl_axis_local is None:
+                raise ValueError(
+                    "cyl_axis_local required when cyl_yaw_grid is provided")
+            axis = np.asarray(cyl_axis_local, dtype=np.float64).reshape(3)
+            axis = axis / (np.linalg.norm(axis) + 1e-12)
+            R_cyl_list = [Rotation.from_rotvec(axis * float(theta)).as_matrix()
+                          for theta in cyl_yaw_grid]
+        z_fixed = float(obj_target_pos_world[2])
+        T_obj_in_wrist_inv = np.linalg.inv(T_obj_in_wrist)
+        candidates_T_wrist = []
+        candidates_meta = []
+        for x_try in x_grid:
+            for y_try in y_grid:
+                for yaw_try in yaw_grid:
+                    c, s = np.cos(yaw_try), np.sin(yaw_try)
+                    R_z = np.array(
+                        [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+                    for cyl_idx, cyl_try in enumerate(cyl_yaw_grid):
+                        R_cyl = R_cyl_list[cyl_idx]
+                        T_obj_target = np.eye(4)
+                        T_obj_target[:3, :3] = R_z @ R_target_obj_world @ R_cyl
+                        T_obj_target[0, 3] = float(x_try)
+                        T_obj_target[1, 3] = float(y_try)
+                        T_obj_target[2, 3] = z_fixed
+                        T_wrist = T_obj_target @ T_obj_in_wrist_inv
+                        candidates_T_wrist.append(T_wrist)
+                        candidates_meta.append(
+                            (float(x_try), float(y_try), float(yaw_try),
+                             float(cyl_try)))
+        candidates_T_wrist = np.array(candidates_T_wrist)
+        N = len(candidates_T_wrist)
+
+        # 3. Batch IK over the grid.
+        device = self._tensor_args.device
+        ik_success_all = np.zeros(N, dtype=bool)
+        ik_arm_qpos = np.full((N, 6), np.nan, dtype=np.float32)
+        for chunk_start in range(0, N, self.BATCH_SIZE):
+            chunk_idx = list(range(
+                chunk_start, min(chunk_start + self.BATCH_SIZE, N)))
+            chunk_poses = candidates_T_wrist[chunk_idx]
+            B = len(chunk_poses)
+            if B < self.BATCH_SIZE:
+                pad = self.BATCH_SIZE - B
+                chunk_poses = np.concatenate(
+                    [chunk_poses, np.tile(chunk_poses[:1], (pad, 1, 1))],
+                    axis=0)
+            goal = _to_curobo_pose(chunk_poses, device)
+            retract = torch.tensor(
+                self._init_state, dtype=torch.float32, device=device,
+            ).unsqueeze(0).repeat(self.BATCH_SIZE, 1)
+            res = self._ik_solver.solve_batch(
+                goal, retract_config=retract)
+            succ = res.success.cpu().numpy()[:B]
+            q_sol = res.solution.cpu().numpy()[:B]
+            if q_sol.ndim == 3:
+                q_sol = q_sol[:, 0, :]
+            for i, idx in enumerate(chunk_idx):
+                if succ[i]:
+                    ik_success_all[idx] = True
+                    arm_q = q_sol[i, :6].copy()
+                    arm_q[5] = _snap_joint6(arm_q[5], current_qpos[5])
+                    ik_arm_qpos[idx] = arm_q
+
+        feasible = np.where(ik_success_all)[0]
+        info = {"n_candidates": N, "n_feasible": int(len(feasible)),
+                "T_wrist_target": candidates_T_wrist[0]}
+        if len(feasible) == 0:
+            info["reason"] = "no_ik_feasible_in_grid"
             return None, info
-        info["plan_success"] = True
-        info["goal_qpos"] = goal_full.tolist()
-        return traj, info
+
+        # 4. Sort IK-feasible candidates by closeness to current arm.
+        cur_arm = np.asarray(current_qpos[:6])
+        dists = np.linalg.norm(ik_arm_qpos[feasible] - cur_arm, axis=1)
+        order = np.argsort(dists)
+
+        if skip_plan:
+            best_local = int(order[0])
+            best_idx = int(feasible[best_local])
+            chosen_x, chosen_y, chosen_yaw, chosen_cyl_yaw = (
+                candidates_meta[best_idx])
+            info["chosen_x"] = chosen_x
+            info["chosen_y"] = chosen_y
+            info["chosen_yaw"] = chosen_yaw
+            info["chosen_cyl_yaw"] = chosen_cyl_yaw
+            info["best_arm_dist_rad"] = float(dists[best_local])
+            info["T_wrist_target"] = candidates_T_wrist[best_idx]
+            info["chosen_arm_qpos"] = ik_arm_qpos[best_idx].tolist()
+            # Sorted (closest-arm-first) candidate list for caller-driven
+            # fallback (e.g. reorient+descent must both pass).
+            info["sorted_candidates"] = [
+                {
+                    "x": candidates_meta[int(feasible[i])][0],
+                    "y": candidates_meta[int(feasible[i])][1],
+                    "yaw": candidates_meta[int(feasible[i])][2],
+                    "cyl_yaw": candidates_meta[int(feasible[i])][3],
+                    "arm_qpos": ik_arm_qpos[int(feasible[i])].tolist(),
+                    "T_wrist": candidates_T_wrist[int(feasible[i])].tolist(),
+                    "arm_dist_rad": float(dists[int(i)]),
+                }
+                for i in order
+            ]
+            return None, info
+
+        # 5. Try plan_single_js on candidates in order until one succeeds.
+        start_full = np.asarray(current_qpos, dtype=np.float32)
+        n_hand = len(self._init_state) - 6
+        hand_held = np.asarray(hold_hand_qpos, dtype=np.float32)
+        if len(hand_held) != n_hand:
+            info["reason"] = (
+                f"hold_hand_qpos len={len(hand_held)} != expected {n_hand}")
+            return None, info
+
+        n_plan_attempts = 0
+        for local_i in order:
+            local_i = int(local_i)
+            cand_idx = int(feasible[local_i])
+            chosen_arm = ik_arm_qpos[cand_idx]
+            goal_full = np.concatenate(
+                [chosen_arm.astype(np.float32), hand_held])
+            n_plan_attempts += 1
+            ok, traj = self._refine_fingers(start_full, goal_full)
+            if ok:
+                chosen_x, chosen_y, chosen_yaw, chosen_cyl_yaw = (
+                    candidates_meta[cand_idx])
+                info["chosen_x"] = chosen_x
+                info["chosen_y"] = chosen_y
+                info["chosen_yaw"] = chosen_yaw
+                info["chosen_cyl_yaw"] = chosen_cyl_yaw
+                info["best_arm_dist_rad"] = float(dists[local_i])
+                info["T_wrist_target"] = candidates_T_wrist[cand_idx]
+                info["chosen_arm_qpos"] = chosen_arm.tolist()
+                info["n_plan_attempts"] = n_plan_attempts
+                return traj, info
+
+        info["reason"] = (
+            f"plan_single_js_failed_all_{len(feasible)}_feasible")
+        info["n_plan_attempts"] = n_plan_attempts
+        return None, info
 
     def plan_js_to_init(self, scene_cfg: dict,
                         start_arm_qpos: np.ndarray,
@@ -696,42 +998,177 @@ class GraspPlanner:
         if not result.success.item():
             if hasattr(result, 'status') and result.status is not None:
                 print(f"    [plan_single_js] status={result.status} (act_dist={self._collision_act_dist})")
-            if hasattr(result, 'valid_query') and result.valid_query is not None:
-                print(f"    [plan_single_js] valid_query={result.valid_query}")
-            # Export collision debug meshes on failure
-            self._export_collision_debug(goal_joint)
+            # Ask cuRobo directly which constraint each state violates.
+            try:
+                jl = self._motion_gen.kinematics.get_joint_limits()
+                jl_lo = jl.position[0].cpu().numpy()
+                jl_hi = jl.position[1].cpu().numpy()
+                jn = list(self._motion_gen.kinematics.joint_names)
+                for label, q in [("start", init_state), ("goal", goal_joint)]:
+                    qt = torch.tensor(q, dtype=torch.float32,
+                                      device=self._tensor_args.device).unsqueeze(0)
+                    js = JointState.from_position(qt)
+                    valid, status = self._motion_gen.check_start_state(js)
+                    print(f"    [check] {label}: valid={valid} status={status}")
+                    qa = np.asarray(q)
+                    for i, qi in enumerate(qa[:len(jl_lo)]):
+                        if qi < jl_lo[i] - 1e-6 or qi > jl_hi[i] + 1e-6:
+                            print(f"      OOB joint[{i}] {jn[i]}: "
+                                  f"q={qi:.4f} not in [{jl_lo[i]:.4f}, {jl_hi[i]:.4f}]")
+            except Exception as ce:
+                print(f"    [check] failed: {ce!r}")
+            # Only export debug meshes when start/end state is in collision
+            # (valid_query=False). Other fail modes (GRAPH_FAIL after valid
+            # query, TRAJOPT_FAIL) skip export — too noisy and unhelpful.
+            if (hasattr(result, 'valid_query')
+                    and result.valid_query is False):
+                self._export_collision_debug(goal_joint)
         if result.success.item():
             return True, result.get_interpolated_plan().position.cpu().numpy()
         return False, None
 
     def _export_collision_debug(self, goal_joint: np.ndarray):
-        """Export hand collision spheres + world meshes at goal state for debugging."""
+        """Export hand collision spheres + world meshes at goal state for
+        debugging. Spheres colliding with any world mesh/cube are red, safe
+        spheres are green. Each call uses a new sequence number so files
+        don't overwrite."""
         try:
             import trimesh
             debug_dir = "/tmp/collision_debug"
             os.makedirs(debug_dir, exist_ok=True)
+            # Sequence number per planner instance so successive fails don't
+            # overwrite each other's exports.
+            if not hasattr(self, "_dbg_seq"):
+                self._dbg_seq = 0
+            self._dbg_seq += 1
+            seq = f"{self._dbg_seq:03d}"
+
+            # Build world trimeshes (obj meshes + table-like cuboids) for
+            # sphere collision check.
+            world_tms = []
+            if self._motion_gen.world_model is not None:
+                wm = self._motion_gen.world_model
+                for m in (getattr(wm, "mesh", None) or []):
+                    pose = np.asarray(getattr(m, "pose",
+                        [0, 0, 0, 1, 0, 0, 0]) or [0, 0, 0, 1, 0, 0, 0])
+                    file_path = getattr(m, "file_path", None)
+                    verts, faces = m.vertices, m.faces
+                    if (verts is None or faces is None) and file_path:
+                        tm = trimesh.load(file_path, force="mesh")
+                    else:
+                        if hasattr(verts, "cpu"): verts = verts.cpu().numpy()
+                        if hasattr(faces, "cpu"): faces = faces.cpu().numpy()
+                        tm = trimesh.Trimesh(vertices=np.asarray(verts),
+                                              faces=np.asarray(faces))
+                    T = np.eye(4); T[:3, 3] = pose[:3]
+                    from scipy.spatial.transform import Rotation as Rot
+                    T[:3, :3] = Rot.from_quat(pose[[4, 5, 6, 3]]).as_matrix()
+                    tm.apply_transform(T)
+                    world_tms.append(tm)
+                for c in (getattr(wm, "cuboid", None) or []):
+                    pose = np.asarray(c.pose)
+                    box = trimesh.creation.box(extents=np.asarray(c.dims))
+                    T = np.eye(4); T[:3, 3] = pose[:3]
+                    from scipy.spatial.transform import Rotation as Rot
+                    T[:3, :3] = Rot.from_quat(pose[[4, 5, 6, 3]]).as_matrix()
+                    box.apply_transform(T)
+                    world_tms.append(box)
 
             # Get collision spheres at goal state
             q = torch.tensor(goal_joint, dtype=torch.float32, device=self._tensor_args.device).unsqueeze(0)
             kin = self._motion_gen.kinematics
             spheres = kin.get_robot_as_spheres(q)
 
-            # Save spheres as mesh. spheres is List[List[Sphere]] (per-batch, per-link).
-            sphere_meshes = []
+            # Self-collision: use motion_gen's OWN self_collision_constraint
+            # (rollout_fn.robot_self_collision_constraint) since that is what
+            # actually rejects plans. Extract per-sphere contribution via
+            # backward gradient.
+            self_collide_set = set()
+            try:
+                mg = self._motion_gen
+                qt = torch.tensor(goal_joint, dtype=torch.float32,
+                                  device=self._tensor_args.device).unsqueeze(0)
+                state = mg.compute_kinematics(JointState.from_position(qt))
+                x_sph = state.robot_spheres.unsqueeze(1).clone().requires_grad_(True)
+                sc = mg.rollout_fn.robot_self_collision_constraint
+                d_self = sc.forward(x_sph)
+                d_self.sum().backward()
+                g = x_sph.grad[0, 0, :, :3].abs().sum(-1).cpu().numpy()
+                mg_pos = x_sph[0, 0, :, :3].detach().cpu().numpy()
+                for i, gi in enumerate(g):
+                    if gi > 1e-9:
+                        self_collide_set.add(tuple(np.round(mg_pos[i], 5)))
+            except Exception as se:
+                print(f"    [debug] self-collision grad failed: {se!r}")
+
+            # World collision + per-sphere coloring. Sphere is RED if it
+            # collides with world mesh OR is in self-collision set.
+            margin = float(self._collision_act_dist)
+            red, green, n_total, n_world, n_self = [], [], 0, 0, 0
             for sphere_batch in spheres:
                 for s in sphere_batch:
-                    pos = np.asarray(s.position)
-                    rad = float(s.radius)
-                    if rad > 0:
-                        m = trimesh.creation.icosphere(radius=rad)
-                        m.apply_translation(pos)
-                        sphere_meshes.append(m)
-            if sphere_meshes:
-                combined = trimesh.util.concatenate(sphere_meshes)
-                out = os.path.join(debug_dir, "hand_spheres.obj")
-                combined.export(out)
-                print(f"    [debug] Hand spheres -> {out}")
+                    r = float(s.radius)
+                    if r <= 0:
+                        continue
+                    n_total += 1
+                    pos = np.asarray(s.position, dtype=float)
+                    world_hit = any(
+                        trimesh.proximity.signed_distance(tm, pos[None])[0] > -(r + margin)
+                        for tm in world_tms
+                    )
+                    self_hit = tuple(np.round(pos, 5)) in self_collide_set
+                    if world_hit: n_world += 1
+                    if self_hit: n_self += 1
+                    m = trimesh.creation.icosphere(radius=r, subdivisions=2)
+                    m.apply_translation(pos)
+                    if world_hit or self_hit:
+                        m.visual.vertex_colors = [255, 0, 0, 255]
+                        red.append(m)
+                    else:
+                        m.visual.vertex_colors = [0, 255, 0, 80]
+                        green.append(m)
+            if red:
+                out = os.path.join(debug_dir, f"{seq}_goal_collide.ply")
+                trimesh.util.concatenate(red).export(out)
+                print(f"    [debug] goal collide spheres "
+                      f"(world={n_world}, self={n_self}, total_red={len(red)}/{n_total}) "
+                      f"-> {out}")
+            if green:
+                out = os.path.join(debug_dir, f"{seq}_goal_safe.ply")
+                trimesh.util.concatenate(green).export(out)
 
+            # Robot link meshes at goal state (URDF FK via yourdfpy).
+            try:
+                import yourdfpy
+                urdf_path_rel = self._hand_cfg.get("kinematics", {}).get("urdf_path")
+                if urdf_path_rel:
+                    urdf_path = os.path.join(
+                        project_dir, "content", "assets", urdf_path_rel)
+                    urdf = yourdfpy.URDF.load(urdf_path)
+                    # Reorder cuRobo qpos into yourdfpy's actuated-joint order
+                    # by matching joint names. Joints absent from cuRobo are
+                    # filled with 0.
+                    urdf_jn = list(urdf.actuated_joint_names)
+                    curobo_jn = list(self._motion_gen.kinematics.joint_names)
+                    curobo_idx = {n: i for i, n in enumerate(curobo_jn)}
+                    goal_np = np.asarray(goal_joint)
+                    urdf_cfg = np.array([
+                        float(goal_np[curobo_idx[jn]]) if jn in curobo_idx else 0.0
+                        for jn in urdf_jn
+                    ], dtype=np.float32)
+                    urdf.update_cfg(urdf_cfg)
+                    print(f"    [debug] urdf_cfg (urdf order): "
+                          f"{np.round(urdf_cfg, 3).tolist()}")
+                    scene = urdf.scene
+                    # Flatten Scene into a single Trimesh in world frame
+                    # (Scene.dump applies per-geometry transforms first).
+                    combined = trimesh.util.concatenate(
+                        list(scene.dump()))
+                    out = os.path.join(debug_dir, f"{seq}_goal_robot.obj")
+                    combined.export(out)
+                    print(f"    [debug] robot mesh at goal -> {out}")
+            except Exception as ue:
+                print(f"    [debug] robot mesh export failed: {ue!r}")
             # Save world meshes + cuboids
             if self._motion_gen.world_model is not None:
                 wm = self._motion_gen.world_model
@@ -754,7 +1191,7 @@ class GraspPlanner:
                     from scipy.spatial.transform import Rotation as Rot
                     T[:3, :3] = Rot.from_quat(pose[[4, 5, 6, 3]]).as_matrix()
                     tm.apply_transform(T)
-                    out = os.path.join(debug_dir, f"world_mesh_{name}.obj")
+                    out = os.path.join(debug_dir, f"{seq}_world_mesh_{name}.obj")
                     tm.export(out)
                     print(f"    [debug] World mesh -> {out}")
                 # Cuboid primitives (table, shelf walls)
@@ -769,12 +1206,18 @@ class GraspPlanner:
                     from scipy.spatial.transform import Rotation as Rot
                     T[:3, :3] = Rot.from_quat(pose[[4, 5, 6, 3]]).as_matrix()
                     box.apply_transform(T)
-                    out = os.path.join(debug_dir, f"world_cube_{name}.obj")
+                    out = os.path.join(debug_dir, f"{seq}_world_cube_{name}.obj")
                     box.export(out)
                     print(f"    [debug] World cube -> {out}")
         except Exception as e:
             import traceback; traceback.print_exc()
             print(f"    [debug] Export failed: {e}")
+        finally:
+            # Prevent GPU memory accumulation across many fail-time exports.
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     # ── internal pipeline ─────────────────────────────────────────────────────
 
@@ -843,7 +1286,8 @@ class GraspPlanner:
     # ── public API ────────────────────────────────────────────────────────────
 
     def get_candidates(self, scene_cfg: dict, obj_name: str, grasp_version: str,
-                        success_only: bool = False, skip_done: bool = False, hand: str = "allegro"):
+                        success_only: bool = False, skip_done: bool = False, hand: str = "allegro",
+                        scene_id: Optional[str] = None):
         """
         Return all grasp candidates with collision filter applied (no motion planning).
 
@@ -855,7 +1299,8 @@ class GraspPlanner:
         """
         obj_pose = cart2se3(scene_cfg["mesh"]["target"]["pose"])
         wrist_se3, pregrasp, grasp, _ = load_candidate(obj_name, obj_pose, grasp_version,
-                                                         skip_done=skip_done, success_only=success_only, hand=hand)
+                                                         skip_done=skip_done, success_only=success_only, hand=hand,
+                                                         scene_id=scene_id)
 
         world_cfg = _to_curobo_world(scene_cfg)
         if self._motion_gen is None:
@@ -965,7 +1410,8 @@ class GraspPlanner:
     def plan(self, scene_cfg: dict, obj_name: str, grasp_version: str,
              mode: str = "batch", seed: Optional[int] = None,
              skip_done: bool = True, success_only: bool = False,
-             hand: str = "allegro") -> PlanResult:
+             hand: str = "allegro",
+             scene_id: Optional[str] = None) -> PlanResult:
         import time as _time
 
         if seed is not None:
@@ -975,7 +1421,7 @@ class GraspPlanner:
         # 1. Load candidates
         t0 = _time.time()
         obj_pose = cart2se3(scene_cfg["mesh"]["target"]["pose"])
-        wrist_se3, pregrasp, grasp, scene_info = load_candidate(obj_name, obj_pose, grasp_version, skip_done=skip_done, success_only=success_only, hand=hand)
+        wrist_se3, pregrasp, grasp, scene_info = load_candidate(obj_name, obj_pose, grasp_version, skip_done=skip_done, success_only=success_only, hand=hand, scene_id=scene_id)
         t_load = _time.time() - t0
 
         if len(wrist_se3) == 0:
@@ -1063,10 +1509,7 @@ class GraspPlanner:
                 if succ[i]:
                     ik_success[idx] = True
                     arm_q = q_sol[i, :6].copy()
-                    # Snap joint 6 to nearest equivalent angle to init_state
-                    # IK can return any angle in [-2π, 2π]; pick closest to start
-                    diff = arm_q[5] - self._init_state[5]
-                    arm_q[5] -= np.round(diff / (2 * np.pi)) * 2 * np.pi
+                    arm_q[5] = _snap_joint6(arm_q[5], self._init_state[5])
                     ik_qpos[idx, :6] = arm_q
                     ik_qpos[idx, 6:] = pregrasp[idx]
         t_ik = _time.time() - t0
@@ -1105,7 +1548,10 @@ class GraspPlanner:
         if n_ik_success == 0:
             return _fail_result({**base_timing, "plan_single_js_s": 0.0})
 
-        # 5. plan_single_js for each IK-reachable candidate until success
+        # 5. plan_single_js for each IK-reachable candidate until success.
+        # Shuffle order so repeated calls explore different candidates
+        # instead of always hitting the lowest-index candidate first.
+        np.random.shuffle(ik_valid)
         t0 = _time.time()
         n_attempts = 0
         for idx in ik_valid:

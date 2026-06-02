@@ -57,11 +57,16 @@ def clear_scene():
 def load_object(obj_name):
     clear_scene()
 
-    # Prefer textured raw mesh; fall back to simplified mesh if missing.
+    # Prefer decimated raw mesh, then raw, then simplified.
+    decimated_path = os.path.join(
+        obj_base_dir, obj_name, "raw_mesh_decimated", f"{obj_name}.obj"
+    )
     raw_mesh_path = os.path.join(
         obj_base_dir, obj_name, "raw_mesh", f"{obj_name}.obj"
     )
-    if os.path.exists(raw_mesh_path):
+    if os.path.exists(decimated_path):
+        mesh = trimesh.load(decimated_path, process=False)
+    elif os.path.exists(raw_mesh_path):
         mesh = trimesh.load(raw_mesh_path, process=False)
     else:
         mesh = trimesh.load(

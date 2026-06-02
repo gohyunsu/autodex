@@ -37,7 +37,7 @@ from autodex.utils.path import obj_path as default_obj_path  # noqa: E402
 # --- Schedules ---
 GAP_SWEEP_WALL_SHELF = [0.02, 0.04, 0.06, 0.08]
 HEIGHT_SWEEP_BOX = [0.05, 0.08]
-N_SWEEP = [200]
+N_SWEEP = [200, 1000]
 SUCCESS_THRESHOLD = 5
 
 # BODex GPU memory budget — W_ks tensor scales as -w * N.
@@ -380,20 +380,55 @@ def process_obj_scene_type(obj_name, scene_type, hand, exp_name, obj_root,
              for sid in scenes}
 
     # If resuming: seed state from prior summary. Successful scenes marked done.
+    # Exhausted/failed scenes: parse history → set (gap_idx, N_idx) to first untried round.
     if resume:
         n_resumed = 0
+        n_skip_ahead = 0
+        n_all_tried = 0
         for sid in state:
             prior = prior_state.get(sid)
-            if prior and prior.get("final", {}).get("status") == "success":
+            if not prior:
+                continue
+            if prior.get("final", {}).get("status") == "success":
                 state[sid]["done"] = True
                 state[sid]["final"] = prior["final"]
                 state[sid]["best_valid"] = prior.get("best_valid", prior["final"].get("valid", 0))
                 state[sid]["history"] = prior.get("history", [])
-                # Restore scene file to prior gap so it matches existing candidates
                 prior_gap = prior["final"].get("gap", sched[0])
                 write_scene_file(obj_name, obj_root, scene_type, scenes[sid], obb_info, prior_gap)
                 n_resumed += 1
-        print(f"  [{scene_type}] resume: {n_resumed}/{len(scenes)} scenes restored as success")
+            else:
+                # Exhausted/failed/scene_none — try to advance to first untried (gap, N)
+                history = prior.get("history", [])
+                tried = set()
+                for h in history:
+                    g, n = h.get("gap"), h.get("N")
+                    if g is not None and n is not None:
+                        tried.add((round(float(g), 4), int(n)))
+                state[sid]["history"] = history
+                state[sid]["best_valid"] = prior.get("best_valid", 0)
+                # find first (gi, ni) where (sched[gi], N_SWEEP[ni]) NOT in tried
+                advanced = False
+                for gi in range(len(sched)):
+                    for ni in range(len(N_SWEEP)):
+                        gap_v = sched[gi]
+                        n_v = N_SWEEP[ni]
+                        key = (round(float(gap_v), 4) if gap_v is not None else None, n_v)
+                        if key not in tried:
+                            state[sid]["gap_idx"] = gi
+                            state[sid]["N_idx"] = ni
+                            advanced = True
+                            break
+                    if advanced:
+                        break
+                if advanced:
+                    n_skip_ahead += 1
+                else:
+                    # all schedule rounds already tried → keep exhausted
+                    state[sid]["done"] = True
+                    state[sid]["final"] = prior["final"]
+                    n_all_tried += 1
+        print(f"  [{scene_type}] resume: {n_resumed} success-restored, {n_skip_ahead} skip-ahead, {n_all_tried} all-tried (kept exhausted)")
 
     # Wipe prior outputs for scenes NOT being resumed (i.e. not done)
     base_bodex = os.path.join(REPO_ROOT, "bodex_outputs", hand, exp_name, obj_name, scene_type)
@@ -489,10 +524,117 @@ def process_obj_scene_type(obj_name, scene_type, hand, exp_name, obj_root,
         cnts = sorted([c for _, c in per_scene_valid], reverse=True)[:5]
         print(f"    -> valid (top5): {cnts}  succ={n_succ}/{len(active_ids)}  zero={n_zero}")
 
-    # ── Bonus phase: scenes that succeeded at sched[0] (smallest primary gap)
-    # try one more round at gap=0.0 (smaller than primary start). If bonus also
-    # reaches threshold, prefer it (smaller gap = more realistic obstacle layout).
-    if scene_type != "box":
+    # ── Downscale phase (resume-only, BATCHED): gradual descent across scenes.
+    # All active scenes at the same descent step are grouped by (g, N) and BODex-batched.
+    if resume and scene_type != "box":
+        ds_state = {}
+        for sid, s in state.items():
+            if not (s["done"] and s.get("final", {}).get("status") == "success"):
+                continue
+            final_gap = s["final"].get("gap")
+            if final_gap is None or final_gap <= sched[0] + 1e-9:
+                continue
+            tried = set()
+            for h in s.get("history", []):
+                g, n = h.get("gap"), h.get("N")
+                if g is not None and n is not None:
+                    tried.add((round(float(g), 4), int(n)))
+            # combos: descending gap, N ascending. (gap_idx desc, then N_idx asc)
+            combos = []
+            for gi in range(len(sched) - 1, -1, -1):
+                g_v = sched[gi]
+                if g_v is None or g_v >= final_gap - 1e-9:
+                    continue
+                for n_v in N_SWEEP:
+                    if (round(float(g_v), 4), n_v) not in tried:
+                        combos.append((g_v, n_v))
+            if not combos:
+                continue
+            cand_dir = os.path.join(REPO_ROOT, "candidates", hand, exp_name,
+                                    obj_name, scene_type, sid)
+            best_backup = cand_dir + "_ds_backup"
+            if os.path.isdir(best_backup):
+                shutil.rmtree(best_backup)
+            if os.path.isdir(cand_dir):
+                shutil.copytree(cand_dir, best_backup)
+            ds_state[sid] = {
+                "queue": combos,
+                "step": 0,
+                "best_final": dict(state[sid]["final"]),
+                "best_backup": best_backup,
+                "active": True,
+            }
+        if ds_state:
+            print(f"  [{scene_type}] downscale phase (batched): {len(ds_state)} scenes")
+            while any(s["active"] for s in ds_state.values()):
+                # Group active scenes by (g, n) at their current step
+                groups = {}
+                for sid, s in ds_state.items():
+                    if not s["active"]:
+                        continue
+                    g, n = s["queue"][s["step"]]
+                    groups.setdefault((g, n), []).append(sid)
+                if not groups:
+                    break
+                for (g_v, n_v), sids in groups.items():
+                    # Per scene: write scene file at g, wipe candidates, clear bodex
+                    for sid in sids:
+                        ok = write_scene_file(obj_name, obj_root, scene_type,
+                                              scenes[sid], obb_info, g_v)
+                        if not ok:
+                            ds_state[sid]["active"] = False
+                            continue
+                        clear_scene_candidates(hand, exp_name, obj_name, scene_type, sid)
+                        clear_scene_bodex(hand, exp_name, obj_name, scene_type, sid)
+                    valid_sids = [s for s in sids if ds_state[s]["active"]]
+                    if not valid_sids:
+                        continue
+                    bd_seed = seeds[0]
+                    run_bodex(hand, exp_name, scene_type, obj_name, n_v, valid_sids,
+                              obj_list_file, parallel=None,
+                              obj_root_dir=obj_root if obj_root != default_obj_path else None,
+                              seed=bd_seed)
+                    run_sim_filter(hand, exp_name, obj_name,
+                                   obj_root_dir=obj_root if obj_root != default_obj_path else None)
+                    for sid in valid_sids:
+                        tag_fresh_candidates(hand, exp_name, obj_name, scene_type, sid, n_v, seed=bd_seed)
+                        cnt = count_passing(hand, exp_name, obj_name, scene_type, sid)
+                        state[sid]["history"].append({"gap": g_v, "N": n_v, "valid_cum": cnt, "phase": "downscale"})
+                        s = ds_state[sid]
+                        if cnt >= SUCCESS_THRESHOLD:
+                            s["best_final"] = {"status": "success", "gap": g_v, "N": n_v,
+                                                "valid": cnt, "via": "downscale"}
+                            cand_dir = os.path.join(REPO_ROOT, "candidates", hand, exp_name,
+                                                    obj_name, scene_type, sid)
+                            if os.path.isdir(s["best_backup"]):
+                                shutil.rmtree(s["best_backup"])
+                            if os.path.isdir(cand_dir):
+                                shutil.copytree(cand_dir, s["best_backup"])
+                            s["step"] += 1
+                            if s["step"] >= len(s["queue"]):
+                                s["active"] = False
+                            print(f"    downscale {sid}: gap={g_v} N={n_v} ({cnt}) ACCEPTED")
+                        else:
+                            cand_dir = os.path.join(REPO_ROOT, "candidates", hand, exp_name,
+                                                    obj_name, scene_type, sid)
+                            if os.path.isdir(cand_dir):
+                                shutil.rmtree(cand_dir)
+                            if os.path.isdir(s["best_backup"]):
+                                shutil.move(s["best_backup"], cand_dir)
+                            s["best_backup"] = cand_dir + "_ds_backup"
+                            write_scene_file(obj_name, obj_root, scene_type, scenes[sid], obb_info,
+                                             s["best_final"].get("gap", sched[0]))
+                            clear_scene_bodex(hand, exp_name, obj_name, scene_type, sid)
+                            s["active"] = False
+                            print(f"    downscale {sid}: gap={g_v} N={n_v} fail ({cnt}) → keep gap={s['best_final'].get('gap')}")
+            # Finalize states + cleanup backups
+            for sid, s in ds_state.items():
+                state[sid]["final"] = s["best_final"]
+                if os.path.isdir(s["best_backup"]):
+                    shutil.rmtree(s["best_backup"])
+
+    # ── Bonus phase: disabled (user request — too expensive per round).
+    if False and scene_type != "box":
         bonus_gap = 0.0
         bonus_candidates = [sid for sid, s in state.items()
                             if s["final"] and s["final"].get("status") == "success"

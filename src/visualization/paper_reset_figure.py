@@ -235,7 +235,10 @@ def collect_panels(hand: str, obj_name: str, ts_name: str,
                    grasp_crop_override=None,
                    place_crop_override=None,
                    scene_dist=None,
-                   scene_target_aspect=None) -> dict:
+                   scene_target_aspect=None,
+                   reorient_state: str = "reorient",
+                   reorient_offset: int = 0,
+                   reorient_crop_override=None) -> dict:
     """Render all five candidate panels for one trial.
 
     Returns dict {start, goal, scene, grasp, place} as BGR uint8 arrays.
@@ -256,8 +259,10 @@ def collect_panels(hand: str, obj_name: str, ts_name: str,
     goal_idx  = idx_or(goal_state,  len(ts_array) - 1)
     grasp_idx = idx_or(grasp_state, 0)
     place_idx = idx_or(place_state, len(ts_array) - 1)
-    grasp_idx = min(len(ts_array) - 1, max(0, grasp_idx + grasp_offset))
-    place_idx = min(len(ts_array) - 1, max(0, place_idx + place_offset))
+    reorient_idx = idx_or(reorient_state, (grasp_idx + place_idx) // 2)
+    grasp_idx    = min(len(ts_array) - 1, max(0, grasp_idx + grasp_offset))
+    place_idx    = min(len(ts_array) - 1, max(0, place_idx + place_offset))
+    reorient_idx = min(len(ts_array) - 1, max(0, reorient_idx + reorient_offset))
 
     scene_bgr = render_panel_scene(
         hand, obj_name, ts_name,
@@ -304,14 +309,16 @@ def collect_panels(hand: str, obj_name: str, ts_name: str,
     new_w = int(scene_bgr.shape[1] * cell_h / scene_bgr.shape[0])
     scene_bgr = cv2.resize(scene_bgr, (new_w, cell_h), interpolation=cv2.INTER_AREA)
 
-    grasp_crop = action_crop if grasp_crop_override is None else grasp_crop_override
-    place_crop = action_crop if place_crop_override is None else place_crop_override
+    grasp_crop    = action_crop if grasp_crop_override    is None else grasp_crop_override
+    place_crop    = action_crop if place_crop_override    is None else place_crop_override
+    reorient_crop = action_crop if reorient_crop_override is None else reorient_crop_override
     return {
-        "start": grab_frame(videos_dir, pose_serial,   start_idx, cell_w, cell_h),
-        "goal":  grab_frame(videos_dir, pose_serial,   goal_idx,  cell_w, cell_h),
-        "scene": scene_bgr,
-        "grasp": grab_frame(videos_dir, action_serial, grasp_idx, cell_w, cell_h, crop=grasp_crop),
-        "place": grab_frame(videos_dir, action_serial, place_idx, cell_w, cell_h, crop=place_crop),
+        "start":    grab_frame(videos_dir, pose_serial,   start_idx,    cell_w, cell_h),
+        "goal":     grab_frame(videos_dir, pose_serial,   goal_idx,     cell_w, cell_h),
+        "scene":    scene_bgr,
+        "grasp":    grab_frame(videos_dir, action_serial, grasp_idx,    cell_w, cell_h, crop=grasp_crop),
+        "place":    grab_frame(videos_dir, action_serial, place_idx,    cell_w, cell_h, crop=place_crop),
+        "reorient": grab_frame(videos_dir, action_serial, reorient_idx, cell_w, cell_h, crop=reorient_crop),
     }
 
 
@@ -387,6 +394,15 @@ def _fit_to(im, w, h, bg=255):
     return out
 
 
+def build_row_4col_equal(p, gap_px=6):
+    """F: scene | grasp@pose_i | reorient | place@pose_j, all fit into
+    (cell_w, cell_h). No mid arrow — the reorient frame conveys the
+    transition."""
+    h, w = p["grasp"].shape[:2]
+    scene = _fit_to(p["scene"], w, h)
+    return hcat([scene, p["grasp"], p["reorient"], p["place"]], gap_px=gap_px)
+
+
 def build_row_3col_equal(p, gap_px=6, mid_gap_px=None):
     """E: scene | grasp@pose_i | place@pose_j, all fit into (cell_w, cell_h).
     `mid_gap_px` widens the gap between Current and Target Pose columns so an
@@ -418,6 +434,78 @@ def _find_font(size: int, bold: bool = True):
     return ImageFont.load_default()
 
 
+def annotate_4col_footer(canvas, cell_w, gap_px, font_size=None, h_band=None,
+                         labels=("Combined Collision Scene", "Current Pose",
+                                 "Reorient", "Target Pose")):
+    """Append a footer band with four column labels under their image columns.
+    Font size auto-selected to be the largest where every label fits inside
+    the column above. No arrow."""
+    from PIL import ImageFont
+    times_path = None
+    for cand in (
+        "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/times.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    ):
+        if Path(cand).exists():
+            times_path = cand
+            break
+
+    edge_pad = 16
+    avail = cell_w - 2 * edge_pad
+
+    def text_w(size, text):
+        return ImageFont.truetype(times_path, size).getlength(text)
+
+    def max_size(text, w_avail, lo=8, hi=600):
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if text_w(mid, text) <= w_avail:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    auto_fs = min(max_size(t, avail) for t in labels)
+    # If user supplies font_size, honor it as-is (may overflow column width).
+    # Otherwise auto-fit to the largest size where every label fits.
+    fs = font_size if font_size is not None else auto_fs
+    if h_band is None:
+        h_band = int(fs * 1.9)
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.font_manager import FontProperties
+
+    H, W = canvas.shape[:2]
+    total_H = H + h_band
+    dpi = 100
+    fig = plt.figure(figsize=(W / dpi, total_H / dpi), dpi=dpi)
+    fig.patch.set_facecolor("white")
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, W)
+    ax.set_ylim(total_H, 0)
+    ax.set_axis_off()
+    ax.imshow(canvas[:, :, ::-1], extent=(0, W, H, 0), interpolation="none")
+
+    pt_size = fs * 72 / dpi
+    fp = FontProperties(fname=times_path, size=pt_size)
+
+    col_centers = [
+        i * (cell_w + gap_px) + cell_w / 2 for i in range(len(labels))
+    ]
+    label_y = H + h_band / 2
+    for label, cx in zip(labels, col_centers):
+        ax.text(cx, label_y, label, ha="center", va="center", color="black",
+                fontproperties=fp, clip_on=False)
+
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
+    plt.close(fig)
+    return buf[:, :, ::-1]
+
+
 def annotate_3col_header(canvas, cell_w, gap_px, font_size=None, h_band=None,
                          mid_gap_px=None):
     """Append a footer band: column labels under each image column, an arrow
@@ -441,12 +529,12 @@ def annotate_3col_header(canvas, cell_w, gap_px, font_size=None, h_band=None,
     arrow_pad = max(8, mid_gap_px // 8)
     arrow_span = mid_gap_px - 2 * arrow_pad
     edge_pad = 16
-    constraints = [
-        ("Combined Collision Scene", cell_w - 2 * edge_pad),
-        ("Current Pose",             cell_w - 2 * edge_pad),
-        ("Target Pose",              cell_w - 2 * edge_pad),
-        ("Reset",                    max(40, arrow_span - 2 * edge_pad)),
+    column_constraints = [
+        ("Combined Scene", cell_w - 2 * edge_pad),
+        ("Current Pose",   cell_w - 2 * edge_pad),
+        ("Target Pose",    cell_w - 2 * edge_pad),
     ]
+    reset_avail = max(40, arrow_span - 2 * edge_pad)
 
     def text_w(size, text):
         return ImageFont.truetype(times_path, size).getlength(text)
@@ -460,8 +548,11 @@ def annotate_3col_header(canvas, cell_w, gap_px, font_size=None, h_band=None,
                 hi = mid - 1
         return lo
 
-    auto_fs = min(max_size(t, w) for t, w in constraints)
-    fs = auto_fs if font_size is None else min(font_size, auto_fs)
+    auto_fs = min(max_size(t, w) for t, w in column_constraints)
+    # If user supplies font_size, honor it as-is for COLUMN labels (may
+    # overflow). Reset is sized independently so it always fits in arrow_span.
+    fs = font_size if font_size is not None else auto_fs
+    reset_fs = min(fs, max_size("Reset", reset_avail))
     if h_band is None:
         h_band = int(fs * 1.9)
 
@@ -490,7 +581,7 @@ def annotate_3col_header(canvas, cell_w, gap_px, font_size=None, h_band=None,
         cell_w + gap_px + cell_w / 2,
         2 * cell_w + gap_px + mid_gap_px + cell_w / 2,
     ]
-    labels = ["Combined Collision Scene", "Current Pose", "Target Pose"]
+    labels = ["Combined Scene", "Current Pose", "Target Pose"]
     label_y = H + h_band / 2
     for label, cx in zip(labels, col_centers):
         ax.text(cx, label_y, label, ha="center", va="center", color="black",
@@ -512,10 +603,11 @@ def annotate_3col_header(canvas, cell_w, gap_px, font_size=None, h_band=None,
     ax.add_patch(arrow)
 
     cx_arrow = (x_left + x_right) / 2
+    reset_fp = FontProperties(fname=times_path, size=reset_fs * 72 / dpi)
     # "Reset" placed directly below the arrow (in the row gap between rows).
-    ax.text(cx_arrow, y_arrow + fs * 0.55 + 4, "Reset",
+    ax.text(cx_arrow, y_arrow + reset_fs * 0.55 + 4, "Reset",
             ha="center", va="top", color="black",
-            fontproperties=fp, clip_on=False)
+            fontproperties=reset_fp, clip_on=False)
 
     fig.canvas.draw()
     buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
@@ -529,6 +621,7 @@ LAYOUTS = {
     "3col":       build_row_3col,
     "2col_split": build_row_2col_split,
     "3col_equal": build_row_3col_equal,
+    "4col_equal": build_row_4col_equal,
 }
 
 
@@ -620,6 +713,11 @@ def main():
     ap.add_argument("--place-crop-x-shifts", nargs="+", type=int, default=None)
     ap.add_argument("--place-crop-y-shifts", nargs="+", type=int, default=None)
     ap.add_argument("--place-crop-scales",   nargs="+", type=float, default=None)
+    ap.add_argument("--reorient-state", default="reorient")
+    ap.add_argument("--reorient-offset", type=int, default=0)
+    ap.add_argument("--reorient-crop-x-shifts", nargs="+", type=int, default=None)
+    ap.add_argument("--reorient-crop-y-shifts", nargs="+", type=int, default=None)
+    ap.add_argument("--reorient-crop-scales",   nargs="+", type=float, default=None)
     ap.add_argument("--layouts", nargs="+",
                     default=list(LAYOUTS.keys()),
                     help="which layouts to emit (subset of "
@@ -628,6 +726,9 @@ def main():
                     help="for 3col_equal layout: prepend a header band with "
                          "column labels and a Reset arrow between Current "
                          "Pose and Target Pose")
+    ap.add_argument("--annotate-4col", action="store_true",
+                    help="for 4col_equal layout: append footer with four "
+                         "column labels (no arrow)")
     ap.add_argument("--header-h", type=int, default=None,
                     help="footer band height (px); auto-sized from font if omitted")
     ap.add_argument("--header-font", type=int, default=None,
@@ -670,6 +771,19 @@ def main():
             args.grasp_crop_x_shifts, args.grasp_crop_y_shifts)
         place_crop = _per_panel_crop(
             args.place_crop_x_shifts, args.place_crop_y_shifts)
+
+        def _per_panel_crop_named(x_shifts, y_shifts, scales):
+            if not args.action_crop:
+                return None
+            y = y_shifts[ti] if y_shifts else 0
+            x = x_shifts[ti] if x_shifts else 0
+            s = scales[ti] if scales else (
+                args.action_crop_scales[ti] if args.action_crop_scales else 1.0)
+            return _shift_action_crop(args.action_crop, y, x, s)
+
+        reorient_crop = _per_panel_crop_named(
+            args.reorient_crop_x_shifts, args.reorient_crop_y_shifts,
+            args.reorient_crop_scales)
         per_trial_panels.append(collect_panels(
             args.hand, obj, ts, args.pose_serial, args.action_serial,
             args.cell_w, args.cell_h, scene_size_arg,
@@ -684,6 +798,9 @@ def main():
             place_crop_override=place_crop,
             scene_dist=(args.scene_dists[ti] if args.scene_dists else None),
             scene_target_aspect=args.scene_target_aspect,
+            reorient_state=args.reorient_state,
+            reorient_offset=args.reorient_offset,
+            reorient_crop_override=reorient_crop,
         ))
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -731,6 +848,11 @@ def main():
                 canvas, args.cell_w, args.gap_px,
                 font_size=args.header_font, h_band=args.header_h,
                 mid_gap_px=mid_gap_px,
+            )
+        if args.annotate_4col and layout_name == "4col_equal":
+            canvas = annotate_4col_footer(
+                canvas, args.cell_w, args.gap_px,
+                font_size=args.header_font, h_band=args.header_h,
             )
 
         png_path = OUT_DIR / f"{args.out_prefix}_{layout_name}.png"

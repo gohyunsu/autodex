@@ -206,9 +206,9 @@ def main() -> int:
     batch.FPOSE_PY = _first_existing(
         ("AUTODEX_FPOSE_PY", "FPOSE_PY"),
         (
-            home / "anaconda3" / "envs" / "planner" / "bin" / "python",
-            home / "anaconda3" / "envs" / "paradex" / "bin" / "python",
             home / "anaconda3" / "envs" / "gotrack_cu128" / "bin" / "python",
+            home / "anaconda3" / "envs" / "paradex" / "bin" / "python",
+            home / "anaconda3" / "envs" / "planner" / "bin" / "python",
             home / "anaconda3" / "envs" / "foundationpose" / "bin" / "python",
             batch.FPOSE_PY,
             home / "miniconda3" / "envs" / "foundationpose" / "bin" / "python",

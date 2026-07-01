@@ -1297,8 +1297,10 @@ wrapper 환경을 맞춘다.
     FP32로 되돌린다.
 
 - `scripts/setup_object_overlay_env.sh`
-  - overlay rendering은 GoTrack env가 아니라 보통 `~/anaconda3/envs/paradex`를
-    사용한다.
+  - overlay rendering은 Blackwell 호환 torch가 있는
+    `~/anaconda3/envs/gotrack_cu128`를 기본으로 사용한다.
+    기존 `paradex` env는 import는 가능해도 RTX 5060 Ti / SM120 CUDA kernel을
+    지원하지 않는 torch build일 수 있다.
   - `overlay_object_video_single.py`에는 `transforms3d`, `trimesh`,
     `open3d`, `nvdiffrast`가 필요하다.
   - 2026-07-01 smoke test에서 GoTrack은 완료됐지만 overlay가

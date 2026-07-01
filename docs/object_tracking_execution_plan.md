@@ -1258,10 +1258,11 @@ wrapper 환경을 맞춘다.
   - overlay rendering은 GoTrack env가 아니라 보통 `~/anaconda3/envs/paradex`를
     사용한다.
   - `overlay_object_video_single.py`에는 `transforms3d`, `trimesh`,
-    `nvdiffrast`가 필요하다.
+    `open3d`, `nvdiffrast`가 필요하다.
   - 2026-07-01 smoke test에서 GoTrack은 완료됐지만 overlay가
-    `ModuleNotFoundError: transforms3d` 또는 `ModuleNotFoundError: trimesh`로
-    실패했으므로, capture PC마다 이 스크립트로 overlay env를 별도 검증한다.
+    `ModuleNotFoundError: transforms3d`, `ModuleNotFoundError: trimesh`, 또는
+    `ModuleNotFoundError: open3d`로 실패했으므로, capture PC마다 이 스크립트로
+    overlay env를 별도 검증한다.
 
 - `scripts/launch_object_overlay_env_setup.sh`
   - robot PC에서 실행한다.

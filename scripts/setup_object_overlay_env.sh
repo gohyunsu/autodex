@@ -17,7 +17,7 @@ fi
 echo "[overlay-env] host=$(hostname)"
 echo "[overlay-env] python=$PY"
 
-"$PY" -m pip install transforms3d trimesh
+"$PY" -m pip install transforms3d trimesh open3d
 
 if ! "$PY" - <<'PY'
 import nvdiffrast.torch as dr
@@ -38,6 +38,7 @@ import nvdiffrast.torch as dr
 import torch
 import transforms3d
 import trimesh
+import open3d
 from paradex.image.projection import intr_opencv_to_opengl_proj
 
 print("overlay_imports_ok")

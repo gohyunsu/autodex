@@ -55,10 +55,10 @@ status() {
                 state=done
             elif grep -q "overlay_imports_ok" "$log"; then
                 state=verified
-            elif [[ "$age" -lt 180 ]]; then
-                state=running
             elif grep -qiE "error|failed|traceback|moduleNotFound|no module named" "$log"; then
                 state=failed
+            elif [[ "$age" -lt 180 ]]; then
+                state=running
             else
                 state=running
             fi

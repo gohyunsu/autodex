@@ -687,8 +687,8 @@ tracking output은 trial directory 아래에 바로 쓰는 것이 기본이다. 
   - `--mode status`: terminal에서 queue 요약 확인.
 - `scripts/gotrack_episode_dashboard.py`
   - offline queue 전용 browser dashboard.
-  - queue summary, worker table, episode table, scheduler event log,
-    overlay playback을 보여준다.
+  - 전역 queue 상태, PC별 현재 episode ETA, 병목/실패 신호, episode별
+    산출물, scheduler event log, overlay video player를 분리해서 보여준다.
 
 기존 `src/process/batch_object_overlay.py`는 그대로 재사용한다. scheduler worker는
 claim한 episode에 대해 아래와 같은 단일 episode command를 실행한다.
@@ -705,12 +705,29 @@ python src/process/batch_object_overlay.py \
 `overlay_<serial>.mp4`를 생성한다. 즉 분배 단위는 episode지만 tracking 자체는
 multi-view다.
 
-offline scheduler dashboard는 live dashboard와 구성이 다르다.
+offline scheduler dashboard는 live dashboard와 구성이 다르다. episode-level
+dynamic scheduling에서는 아직 실행하지 않은 episode가 특정 PC에 미리 배정되어
+있지 않다. 따라서 PC별 ETA는 "그 PC가 현재 claim해서 처리 중인 episode의
+남은 시간"을 뜻하고, 전체 queue의 남은 시간은 별도의 global ETA로 표시한다.
 
-- `Queue Summary`: 전체 episode 중 완료/진행/대기/실패 수와 ETA.
-- `Workers`: 각 capture PC worker가 어떤 episode를 처리 중인지.
-- `Episode Queue`: episode별 상태, stage, frame progress, overlay playback.
-- `Scheduler Events`: queue claim, task start/done/fail, worker start/stop log.
+- `Queue Overview`: 전체 schedule의 완료율, 완료/진행/대기/실패 episode 수,
+  active PC 수, global ETA, episode/hour throughput, 생성된 overlay video 수.
+  전역 상태만 보여주며 PC별 세부 정보는 포함하지 않는다.
+- `PC ETA`: `capture1`, `capture2`, `capture3`, `capture5`, `capture6`를
+  한 줄씩 보여준다. 각 줄에는 worker state, 현재 object/episode, stage,
+  frame progress, current task ETA, 완료/실패 수, 평균 episode runtime,
+  마지막 업데이트 시간이 표시된다. worker 파일이 아직 없으면 `not_started`로
+  남는다.
+- `Bottlenecks`: 실패 episode, stale worker, 가장 오래 실행 중인 task,
+  완료되었지만 overlay 산출물이 부족한 episode를 따로 모아 보여준다. 이는
+  queue 요약이 아니라 재시도/점검이 필요한 항목을 찾기 위한 패널이다.
+- `Episode Work Queue`: episode별 상태, object, episode id, stage,
+  frame progress, worker, task ETA, runtime, output path를 보여준다. 완료된
+  episode에 `overlay_*.mp4`가 있으면 버튼으로 노출하고, 클릭하면 같은 화면의
+  video player에서 바로 재생한다.
+- `Scheduler Events`: `events.jsonl` tail이다. queue claim, task start/done/fail,
+  worker start/stop 같은 순차 이벤트만 보여주며 현재 상태 판단은 위 패널들이
+  담당한다.
 
 이 구성은 live dashboard의 `Distributed Capture Health`와 다르다. offline에서는
 5개 PC가 같은 episode의 view를 나누어 처리하는 것이 아니라 서로 다른 episode를

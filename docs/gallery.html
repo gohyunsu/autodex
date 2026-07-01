@@ -69,14 +69,13 @@
     .control-deck {
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: minmax(160px, 1.15fr) repeat(5, minmax(118px, .8fr)) auto;
+      grid-template-columns: minmax(160px, 1.15fr) repeat(5, minmax(118px, .8fr));
       gap: 8px;
       padding: 10px;
       align-items: end;
     }
 
-    .field label,
-    .switch-title {
+    .field label {
       display: block;
       margin-bottom: 4px;
       color: var(--text-muted);
@@ -101,61 +100,6 @@
     .field input:focus,
     .field select:focus {
       border-color: var(--accent);
-    }
-
-    .switch-stack {
-      display: flex;
-      align-items: flex-end;
-      gap: 8px;
-      min-width: 190px;
-    }
-
-    .switch {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 38px;
-      padding: 7px 9px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface-2);
-      color: var(--text-muted);
-      font-size: .82em;
-      font-weight: 800;
-      cursor: pointer;
-      user-select: none;
-    }
-
-    .switch input {
-      appearance: none;
-      width: 32px;
-      height: 18px;
-      position: relative;
-      border-radius: 999px;
-      background: var(--line-strong);
-      outline: none;
-      transition: background .16s;
-    }
-
-    .switch input::after {
-      content: "";
-      position: absolute;
-      top: 3px;
-      left: 3px;
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background: #fff;
-      transition: transform .16s;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, .2);
-    }
-
-    .switch input:checked {
-      background: var(--accent);
-    }
-
-    .switch input:checked::after {
-      transform: translateX(14px);
     }
 
     .viewer-main {
@@ -288,31 +232,68 @@
       accent-color: var(--accent);
     }
 
-    .camera-strip {
-      display: flex;
-      gap: 6px;
-      padding: 10px;
-      overflow-x: auto;
-      border-top: 1px solid var(--line);
+    .selector-stack {
       background: #fcfbf9;
+      border-top: 1px solid var(--line);
     }
 
-    .cam-btn {
-      flex: 0 0 auto;
-      min-height: 30px;
-      padding: 5px 9px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: #fff;
+    .selector-row {
+      border-bottom: 1px solid var(--line);
+    }
+
+    .selector-row-header {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr) auto 18px;
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 0;
+      background: transparent;
+      text-align: left;
+    }
+
+    .selector-row-header:hover {
+      background: #f6f1eb;
+    }
+
+    .selector-row-label {
+      color: var(--text);
+      font-size: .8em;
+      font-weight: 850;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+    }
+
+    .selector-row-value {
+      min-width: 0;
       color: var(--text-muted);
-      font-size: .76em;
-      font-weight: 800;
+      font-size: .82em;
+      font-weight: 750;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .cam-btn.active {
-      border-color: var(--accent);
-      background: var(--accent-soft);
-      color: var(--accent-hover);
+    .selector-row-count {
+      color: var(--text-muted);
+      font-size: .74em;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .selector-chevron {
+      color: var(--text-muted);
+      font-size: 1.2em;
+      font-weight: 800;
+      line-height: 1;
+      text-align: center;
+      transition: transform .16s;
+    }
+
+    .selector-row.open .selector-chevron {
+      transform: rotate(90deg);
     }
 
     .side-stack {
@@ -392,58 +373,24 @@
       font-weight: 700;
     }
 
-    .thumb-zone {
-      background: #fcfbf9;
-    }
-
-    .thumb-drawer {
+    .selector-rail {
       display: none;
-      grid-template-columns: 82px minmax(0, 1fr);
-      gap: 8px;
-      align-items: center;
-      min-width: 0;
-      padding: 7px 10px;
-      border-top: 1px solid var(--line);
-    }
-
-    .thumb-drawer.open {
-      display: grid;
-    }
-
-    .drawer-head {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      justify-content: center;
-      gap: 2px;
-      min-width: 0;
-    }
-
-    .drawer-head h3 {
-      font-size: .8em;
-      line-height: 1.1;
-    }
-
-    .drawer-head span {
-      color: var(--text-muted);
-      font-size: .7em;
-      font-weight: 700;
-    }
-
-    .object-strip,
-    .pose-strip {
-      display: flex;
       gap: 8px;
       min-width: 0;
       overflow-x: auto;
       overflow-y: hidden;
       overscroll-behavior-x: contain;
-      padding: 1px 2px 5px;
+      padding: 0 10px 8px 90px;
       scrollbar-width: thin;
     }
 
+    .selector-row.open .selector-rail {
+      display: flex;
+    }
+
     .object-tile,
-    .pose-tile {
+    .pose-tile,
+    .view-tile {
       flex: 0 0 118px;
       overflow: hidden;
       border: 1px solid var(--line);
@@ -455,8 +402,10 @@
 
     .object-tile:hover,
     .pose-tile:hover,
+    .view-tile:hover,
     .object-tile.active,
-    .pose-tile.active {
+    .pose-tile.active,
+    .view-tile.active {
       border-color: var(--accent);
       box-shadow: var(--shadow-lift);
       transform: translateY(-1px);
@@ -467,7 +416,8 @@
     }
 
     .object-tile img,
-    .pose-tile video {
+    .pose-tile video,
+    .view-tile video {
       width: 100%;
       height: 62px;
       display: block;
@@ -501,8 +451,8 @@
       text-overflow: ellipsis;
     }
 
-    .thumb-zone .tile-sub,
-    .thumb-zone .status-line {
+    .selector-stack .tile-sub,
+    .selector-stack .status-line {
       display: none;
     }
 
@@ -526,10 +476,6 @@
     @media (max-width: 1180px) {
       .control-deck {
         grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
-
-      .switch-stack {
-        min-width: 0;
       }
 
       .explorer-layout {
@@ -576,13 +522,12 @@
         grid-template-columns: 86px minmax(0, 1fr);
       }
 
-      .thumb-drawer.open {
-        grid-template-columns: 1fr;
+      .selector-row-header {
+        grid-template-columns: 64px minmax(0, 1fr) auto 18px;
       }
 
-      .drawer-head {
-        flex-direction: row;
-        justify-content: space-between;
+      .selector-rail {
+        padding-left: 10px;
       }
     }
   </style>
@@ -602,7 +547,7 @@
       <div>
         <div class="gallery-kicker">Dataset Gallery</div>
         <h1 class="gallery-title">Episode Viewer</h1>
-        <p class="gallery-copy">Select a grasp episode, camera view, and content layer. The captured multi-view recording stays in the main panel; object and pose thumbnails open only when their switches are enabled.</p>
+        <p class="gallery-copy">Select a grasp episode, camera view, and content layer. Compact object, pose, and view selectors sit directly above the main panel for focused browsing.</p>
       </div>
       <div class="summary-pills" id="summary-pills"></div>
     </header>
@@ -644,19 +589,6 @@
         <label for="episode-select">Episode / grasp</label>
         <select id="episode-select"></select>
       </div>
-      <div>
-        <span class="switch-title">Thumbnails</span>
-        <div class="switch-stack">
-          <label class="switch" title="Show object thumbnails">
-            <input id="toggle-objects" type="checkbox">
-            Objects
-          </label>
-          <label class="switch" title="Show pose turntables">
-            <input id="toggle-poses" type="checkbox">
-            Poses
-          </label>
-        </div>
-      </div>
     </section>
 
     <section class="explorer-layout">
@@ -673,23 +605,35 @@
           </div>
         </div>
 
-        <div class="camera-strip" id="camera-strip"></div>
-
-        <div class="thumb-zone" aria-label="Thumbnail selectors">
-          <section class="thumb-drawer" id="object-drawer">
-            <div class="drawer-head">
-              <h3>Objects</h3>
-              <span id="object-count"></span>
-            </div>
-            <div class="object-strip" id="object-strip"></div>
+        <div class="selector-stack" aria-label="Thumbnail selectors">
+          <section class="selector-row" id="object-selector" data-selector="object">
+            <button class="selector-row-header" id="object-header" type="button" aria-expanded="false" aria-controls="object-strip">
+              <span class="selector-row-label">Object</span>
+              <span class="selector-row-value" id="object-value">-</span>
+              <span class="selector-row-count" id="object-count"></span>
+              <span class="selector-chevron">&rsaquo;</span>
+            </button>
+            <div class="selector-rail object-strip" id="object-strip"></div>
           </section>
 
-          <section class="thumb-drawer" id="pose-drawer">
-            <div class="drawer-head">
-              <h3>Poses</h3>
-              <span id="pose-count"></span>
-            </div>
-            <div class="pose-strip" id="pose-strip"></div>
+          <section class="selector-row" id="pose-selector" data-selector="pose">
+            <button class="selector-row-header" id="pose-header" type="button" aria-expanded="false" aria-controls="pose-strip">
+              <span class="selector-row-label">Pose</span>
+              <span class="selector-row-value" id="pose-value">-</span>
+              <span class="selector-row-count" id="pose-count"></span>
+              <span class="selector-chevron">&rsaquo;</span>
+            </button>
+            <div class="selector-rail pose-strip" id="pose-strip"></div>
+          </section>
+
+          <section class="selector-row" id="view-selector" data-selector="view">
+            <button class="selector-row-header" id="view-header" type="button" aria-expanded="false" aria-controls="view-strip">
+              <span class="selector-row-label">View</span>
+              <span class="selector-row-value" id="view-value">-</span>
+              <span class="selector-row-count" id="view-count"></span>
+              <span class="selector-chevron">&rsaquo;</span>
+            </button>
+            <div class="selector-rail view-strip" id="view-strip"></div>
           </section>
         </div>
 
@@ -749,6 +693,7 @@
       episodes: [],
       currentKey: null,
       currentCamera: null,
+      openSelector: null,
       mode: 'video'
     };
 
@@ -761,8 +706,15 @@
       'scene-filter',
       'object-filter',
       'episode-select',
-      'toggle-objects',
-      'toggle-poses',
+      'object-selector',
+      'pose-selector',
+      'view-selector',
+      'object-header',
+      'pose-header',
+      'view-header',
+      'object-value',
+      'pose-value',
+      'view-value',
       'selected-title',
       'selected-subtitle',
       'main-video',
@@ -770,16 +722,15 @@
       'pending-title',
       'pending-copy',
       'model-viewer',
-      'camera-strip',
       'status-badge',
       'episode-meta',
       'asset-state',
-      'object-drawer',
       'object-strip',
       'object-count',
-      'pose-drawer',
       'pose-strip',
-      'pose-count'
+      'pose-count',
+      'view-strip',
+      'view-count'
     ].forEach(id => { els[id] = document.getElementById(id); });
 
     Promise.all([
@@ -815,8 +766,12 @@
         renderAll();
       });
 
-      els['toggle-objects'].addEventListener('change', renderDrawers);
-      els['toggle-poses'].addEventListener('change', renderDrawers);
+      ['object', 'pose', 'view'].forEach(name => {
+        els[`${name}-header`].addEventListener('click', () => {
+          state.openSelector = state.openSelector === name ? null : name;
+          renderSelectorRows();
+        });
+      });
 
       document.querySelectorAll('.mode-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -828,9 +783,10 @@
 
     function applyInitialViewParams() {
       const params = new URLSearchParams(location.search);
-      const thumbs = (params.get('thumbs') || '').toLowerCase().split(/[,\s]+/);
-      els['toggle-objects'].checked = thumbs.includes('object') || thumbs.includes('objects');
-      els['toggle-poses'].checked = thumbs.includes('pose') || thumbs.includes('poses');
+      const open = (params.get('selector') || params.get('open') || '').toLowerCase();
+      if (['object', 'pose', 'view'].includes(open)) {
+        state.openSelector = open;
+      }
     }
 
     function flattenEpisodes() {
@@ -952,7 +908,7 @@
       renderEpisodeSelect();
       renderMainPanel();
       renderSidePanels();
-      renderDrawers();
+      renderSelectorRows();
     }
 
     function renderEpisodeSelect() {
@@ -996,7 +952,6 @@
       els['selected-title'].textContent = `${ep.objName} - ${titleize(ep.hand)} - ${ep.rankLabel}`;
       els['selected-subtitle'].textContent = `${titleize(ep.scene)} scene ${ep.sceneInfo.slice(1).join(' / ')} | view ${state.currentCamera || 'none'} | ${ep.status}`;
 
-      renderCameraStrip(ep);
       if (state.mode === 'video') {
         showVideo(videoUrl(ep, state.currentCamera));
       } else if (state.mode === 'overlay') {
@@ -1016,16 +971,40 @@
       }
     }
 
-    function renderCameraStrip(ep) {
-      const cameras = ep.cameras || [];
-      els['camera-strip'].innerHTML = cameras.map((cam, idx) =>
-        `<button class="cam-btn ${cam === state.currentCamera ? 'active' : ''}" data-camera="${escapeHtml(cam)}">View ${idx + 1}<br>${escapeHtml(cam)}</button>`
-      ).join('') || '<div class="empty-inline">No camera streams listed for this episode.</div>';
-      els['camera-strip'].querySelectorAll('.cam-btn').forEach(btn => {
+    function renderViewRow() {
+      const ep = currentEpisode();
+      const cameras = ep?.cameras || [];
+      const open = state.openSelector === 'view';
+      els['view-count'].textContent = cameras.length ? `${cameras.length} views` : '0 views';
+      if (!open) {
+        els['view-strip'].innerHTML = '';
+        return;
+      }
+      if (!ep || !cameras.length) {
+        els['view-strip'].innerHTML = '<div class="empty-inline">No camera streams listed for this episode.</div>';
+        return;
+      }
+      els['view-strip'].innerHTML = cameras.map((cam, idx) =>
+        `<button class="view-tile ${cam === state.currentCamera ? 'active' : ''}" data-camera="${escapeHtml(cam)}" title="${escapeHtml(cam)}">
+          <video src="${videoUrl(ep, cam)}" muted playsinline preload="metadata"></video>
+          <div class="tile-body">
+            <div class="tile-title">View ${idx + 1}</div>
+            <div class="tile-sub">${escapeHtml(cam)}</div>
+          </div>
+        </button>`
+      ).join('');
+      els['view-strip'].querySelectorAll('.view-tile').forEach(btn => {
         btn.addEventListener('click', () => {
           state.currentCamera = btn.dataset.camera;
           renderMainPanel();
           renderSidePanels();
+          renderSelectorRows();
+        });
+        const vid = btn.querySelector('video');
+        btn.addEventListener('mouseenter', () => vid.play().catch(() => {}));
+        btn.addEventListener('mouseleave', () => {
+          vid.pause();
+          vid.currentTime = 0;
         });
       });
     }
@@ -1063,7 +1042,7 @@
     }
 
     function clearMedia() {
-      els['camera-strip'].innerHTML = '';
+      els['view-strip'].innerHTML = '';
       showPending('No episode selected', 'Adjust filters to select an episode.');
     }
 
@@ -1105,15 +1084,36 @@
       return `<div class="asset-line"><span>${escapeHtml(label)}</span><span class="chip ${tone}">${escapeHtml(value)}</span></div>`;
     }
 
-    function renderDrawers() {
-      renderObjectDrawer();
-      renderPoseDrawer();
+    function renderSelectorRows() {
+      updateSelectorHeaders();
+      ['object', 'pose', 'view'].forEach(name => {
+        const open = state.openSelector === name;
+        els[`${name}-selector`].classList.toggle('open', open);
+        els[`${name}-header`].setAttribute('aria-expanded', String(open));
+      });
+      renderObjectRow();
+      renderPoseRow();
+      renderViewRow();
     }
 
-    function renderObjectDrawer() {
-      const open = els['toggle-objects'].checked;
-      els['object-drawer'].classList.toggle('open', open);
-      if (!open) return;
+    function updateSelectorHeaders() {
+      const ep = currentEpisode();
+      if (!ep) {
+        els['object-value'].textContent = '-';
+        els['pose-value'].textContent = '-';
+        els['view-value'].textContent = '-';
+        return;
+      }
+      const viewIndex = ep.cameras.indexOf(state.currentCamera);
+      els['object-value'].textContent = ep.objName;
+      els['pose-value'].textContent = `${ep.rankLabel} | ${titleize(ep.hand)} | ${ep.status}`;
+      els['view-value'].textContent = viewIndex >= 0
+        ? `View ${viewIndex + 1} | ${state.currentCamera}`
+        : state.currentCamera || '-';
+    }
+
+    function renderObjectRow() {
+      const open = state.openSelector === 'object';
 
       const f = filters();
       const episodes = state.episodes.filter(ep =>
@@ -1132,6 +1132,10 @@
       });
       const items = [...byObject.values()].sort((a, b) => a.name.localeCompare(b.name));
       els['object-count'].textContent = `${items.length} objects`;
+      if (!open) {
+        els['object-strip'].innerHTML = '';
+        return;
+      }
       els['object-strip'].innerHTML = items.map(item => {
         const active = currentEpisode()?.objId === item.id;
         const thumb = item.hasThumbnail ? `objects/${item.id}/thumb.png` : '';
@@ -1155,10 +1159,8 @@
       });
     }
 
-    function renderPoseDrawer() {
-      const open = els['toggle-poses'].checked;
-      els['pose-drawer'].classList.toggle('open', open);
-      if (!open) return;
+    function renderPoseRow() {
+      const open = state.openSelector === 'pose';
 
       const ep = currentEpisode();
       if (!ep) {
@@ -1168,12 +1170,16 @@
       }
       const f = filters();
       const poseItems = state.episodes.filter(item =>
-        item.objId === ep.objId &&
-        (f.hand === 'all' || item.hand === f.hand) &&
-        (f.status === 'all' || item.status === f.status) &&
-        (f.scene === 'all' || item.scene === f.scene)
+          item.objId === ep.objId &&
+          (f.hand === 'all' || item.hand === f.hand) &&
+          (f.status === 'all' || item.status === f.status) &&
+          (f.scene === 'all' || item.scene === f.scene)
       ).slice(0, 48);
       els['pose-count'].textContent = `${poseItems.length} pose candidates`;
+      if (!open) {
+        els['pose-strip'].innerHTML = '';
+        return;
+      }
       els['pose-strip'].innerHTML = poseItems.map(item => {
         const active = item.key === state.currentKey;
         return `<button class="pose-tile ${active ? 'active' : ''}" data-key="${escapeHtml(item.key)}">

@@ -59,8 +59,7 @@
 
     .control-deck,
     .viewer-main,
-    .context-panel,
-    .thumb-drawer {
+    .context-panel {
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -393,43 +392,59 @@
       font-weight: 700;
     }
 
+    .thumb-zone {
+      background: #fcfbf9;
+    }
+
     .thumb-drawer {
-      grid-column: 1 / -1;
       display: none;
-      padding: 12px;
+      grid-template-columns: 82px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+      padding: 7px 10px;
+      border-top: 1px solid var(--line);
     }
 
     .thumb-drawer.open {
-      display: block;
+      display: grid;
     }
 
     .drawer-head {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 10px;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 2px;
+      min-width: 0;
     }
 
     .drawer-head h3 {
-      font-size: .98em;
+      font-size: .8em;
+      line-height: 1.1;
     }
 
     .drawer-head span {
       color: var(--text-muted);
-      font-size: .82em;
+      font-size: .7em;
       font-weight: 700;
     }
 
     .object-strip,
     .pose-strip {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-      gap: 10px;
+      display: flex;
+      gap: 8px;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      overscroll-behavior-x: contain;
+      padding: 1px 2px 5px;
+      scrollbar-width: thin;
     }
 
     .object-tile,
     .pose-tile {
+      flex: 0 0 118px;
       overflow: hidden;
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -447,25 +462,29 @@
       transform: translateY(-1px);
     }
 
+    .pose-tile {
+      flex-basis: 142px;
+    }
+
     .object-tile img,
     .pose-tile video {
       width: 100%;
-      aspect-ratio: 16 / 10;
+      height: 62px;
       display: block;
       background: var(--surface-2);
       object-fit: cover;
     }
 
     .object-tile img {
-      aspect-ratio: 1;
+      height: 62px;
     }
 
     .tile-body {
-      padding: 8px 9px 9px;
+      padding: 5px 6px 6px;
     }
 
     .tile-title {
-      font-size: .86em;
+      font-size: .72em;
       font-weight: 800;
       white-space: nowrap;
       overflow: hidden;
@@ -475,8 +494,16 @@
     .tile-sub {
       margin-top: 3px;
       color: var(--text-muted);
-      font-size: .76em;
+      font-size: .7em;
       font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .thumb-zone .tile-sub,
+    .thumb-zone .status-line {
+      display: none;
     }
 
     .status-line {
@@ -547,6 +574,15 @@
 
       .meta-row {
         grid-template-columns: 86px minmax(0, 1fr);
+      }
+
+      .thumb-drawer.open {
+        grid-template-columns: 1fr;
+      }
+
+      .drawer-head {
+        flex-direction: row;
+        justify-content: space-between;
       }
     }
   </style>
@@ -639,6 +675,24 @@
 
         <div class="camera-strip" id="camera-strip"></div>
 
+        <div class="thumb-zone" aria-label="Thumbnail selectors">
+          <section class="thumb-drawer" id="object-drawer">
+            <div class="drawer-head">
+              <h3>Objects</h3>
+              <span id="object-count"></span>
+            </div>
+            <div class="object-strip" id="object-strip"></div>
+          </section>
+
+          <section class="thumb-drawer" id="pose-drawer">
+            <div class="drawer-head">
+              <h3>Poses</h3>
+              <span id="pose-count"></span>
+            </div>
+            <div class="pose-strip" id="pose-strip"></div>
+          </section>
+        </div>
+
         <div class="screen-wrap">
           <video id="main-video" controls muted loop playsinline preload="metadata"></video>
           <div class="screen-placeholder" id="pending-layer">
@@ -683,22 +737,6 @@
           <div class="asset-state" id="asset-state"></div>
         </section>
       </aside>
-
-      <section class="thumb-drawer" id="object-drawer">
-        <div class="drawer-head">
-          <h3>Object Thumbnails</h3>
-          <span id="object-count"></span>
-        </div>
-        <div class="object-strip" id="object-strip"></div>
-      </section>
-
-      <section class="thumb-drawer" id="pose-drawer">
-        <div class="drawer-head">
-          <h3>Pose Turntables</h3>
-          <span id="pose-count"></span>
-        </div>
-        <div class="pose-strip" id="pose-strip"></div>
-      </section>
     </section>
   </main>
 
@@ -756,6 +794,7 @@
       fillFilters();
       renderSummary();
       selectInitialEpisode();
+      applyInitialViewParams();
       bindEvents();
       renderAll();
     }).catch(err => {
@@ -785,6 +824,13 @@
           renderMainPanel();
         });
       });
+    }
+
+    function applyInitialViewParams() {
+      const params = new URLSearchParams(location.search);
+      const thumbs = (params.get('thumbs') || '').toLowerCase().split(/[,\s]+/);
+      els['toggle-objects'].checked = thumbs.includes('object') || thumbs.includes('objects');
+      els['toggle-poses'].checked = thumbs.includes('pose') || thumbs.includes('poses');
     }
 
     function flattenEpisodes() {

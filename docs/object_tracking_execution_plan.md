@@ -1189,3 +1189,139 @@ status 변화 감지를 통해 failure event를 기록하는 방식으로 시작
 
 이 순서면 기존 tracking core를 건드리지 않고도, 실험 중 "어디까지 진행됐는지"를
 파일로 누적 확인할 수 있다.
+
+## 11. 2026-07-01 capture PC 환경 재설정
+
+### 11.1 실제 실패 원인
+
+5개 PC 병렬 episode smoke test에서 scheduler 자체는 정상 동작했다. 각 worker는
+episode를 claim했고, GoTrack도 카메라 24개를 찾고 model load까지 진행했다.
+실패 지점은 DINOv2 feature extraction 내부의 xformers attention kernel 선택이다.
+
+대표 진단 결과:
+
+```text
+torch 2.11.0+cu128
+gpu NVIDIA GeForce RTX 5060 Ti
+compute capability (12, 0)
+xformers 0.0.35
+build.torch_version 2.10.0+cu128
+build.env.TORCH_CUDA_ARCH_LIST 7.5 8.0+PTX 8.0 9.0a
+memory_efficient_attention.cutlassF-blackwell unavailable
+```
+
+따라서 문제는 object tracking 코드의 분산 스케줄링이 아니라, capture PC의
+`gotrack_cu128` 환경에 설치된 xformers wheel이 Blackwell/SM120용 커널을 포함하지
+않는다는 점이다. import는 성공하지만 실제 GoTrack이 사용하는 FP32
+`memory_efficient_attention_forward` 호출에서 다음 형태로 실패한다.
+
+```text
+NotImplementedError: No operator found for memory_efficient_attention_forward
+requires device with capability <= (9, 0) but your GPU has capability (12, 0)
+```
+
+이 문제는 fallback으로 xformers를 끄거나 코드를 우회해서 해결하지 않는다.
+`gotrack_cu128` 안에서 현재 설치된 torch/CUDA와 같은 ABI로 xformers를 source build
+하여 SM120 커널을 포함시키는 방식으로 환경을 다시 맞춘다.
+
+### 11.2 추가된 환경 스크립트
+
+- `scripts/setup_gotrack_blackwell_xformers.sh`
+  - 각 capture PC 내부에서 실행한다.
+  - `gotrack_cu128` conda env를 activate한다.
+  - build dependency와 CUDA 12.8 nvcc package를 확인/설치한다.
+  - `TORCH_CUDA_ARCH_LIST=12.0`으로 xformers를 source build한다.
+  - 마지막에 실제 실패 지점과 같은 FP32 xformers attention 호출을 실행한다.
+
+- `scripts/launch_gotrack_env_setup.sh`
+  - robot PC에서 실행한다.
+  - `capture1`, `capture2`, `capture3`, `capture5`, `capture6`에 SSH를 PC당 한 번만
+    열어 setup을 background로 시작한다.
+  - 이후 상태 확인은 SSH polling이 아니라 공유 로그 파일을 읽는다.
+
+완료 판정 기준:
+
+```text
+[verify] memory_efficient_attention_fp32_ok ...
+[setup] done
+```
+
+위 두 줄이 각 PC의 setup log에 있어야 해당 PC 환경 재설정이 완료된 것이다.
+
+### 11.3 실행 명령
+
+한 PC에서 직접 검증:
+
+```bash
+bash scripts/setup_gotrack_blackwell_xformers.sh --verify-only
+```
+
+한 PC에서 실제 재빌드:
+
+```bash
+bash scripts/setup_gotrack_blackwell_xformers.sh
+```
+
+5개 capture PC에 한 번씩만 SSH로 launch:
+
+```bash
+LOG_ID=gotrack_sm120_20260701 \
+STAGGER_SECONDS=60 \
+bash scripts/launch_gotrack_env_setup.sh launch
+```
+
+진행 상태 확인:
+
+```bash
+LOG_ID=gotrack_sm120_20260701 \
+bash scripts/launch_gotrack_env_setup.sh status
+```
+
+공유 로그 위치:
+
+```text
+/home/robot/shared_data/AutoDex/object_tracking/env_setup/<LOG_ID>/
+  capture1.launch.log
+  capture1.setup.log
+  capture1.setup.pid
+  capture2.launch.log
+  capture2.setup.log
+  ...
+```
+
+SSH reset이 발생한 PC는 `*.launch_failed` 파일로 남는다. 이 경우 전체를 다시
+누르지 말고 실패한 PC만 대상으로 같은 `LOG_ID`를 유지해 launch한다.
+
+```bash
+PCS="capture2 capture5" \
+LOG_ID=gotrack_sm120_20260701 \
+bash scripts/launch_gotrack_env_setup.sh launch
+```
+
+### 11.4 환경 재설정 후 재실행
+
+기존 5-PC smoke test schedule은 다음 위치에 있다.
+
+```text
+/home/robot/shared_data/AutoDex/object_tracking/episode_scheduler/gotrack_5pc_banana_20260701
+```
+
+환경 재설정이 끝나면 schedule을 새로 만들 필요 없이 실패 task만 retry한다.
+
+```bash
+python scripts/run_gotrack_episode_scheduler.py \
+  --mode launch \
+  --schedule-dir /home/robot/shared_data/AutoDex/object_tracking/episode_scheduler/gotrack_5pc_banana_20260701 \
+  --pcs capture1 capture2 capture3 capture5 capture6 \
+  --repo-dir /home/robot/AutoDex \
+  --retry-failed
+```
+
+대시보드는 기존과 같은 schedule directory를 보면 된다.
+
+```bash
+python scripts/gotrack_episode_dashboard.py \
+  --schedule-dir /home/robot/shared_data/AutoDex/object_tracking/episode_scheduler/gotrack_5pc_banana_20260701 \
+  --host 0.0.0.0 \
+  --port 8768
+```

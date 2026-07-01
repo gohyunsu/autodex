@@ -45,17 +45,22 @@ status() {
         log="$LOCAL_LOG_ROOT/$pc.setup.log"
         launch_log="$LOCAL_LOG_ROOT/$pc.launch.log"
         if [[ -f "$log" ]]; then
+            now=$(date +%s)
+            mtime=$(stat -c %Y "$log" 2>/dev/null || echo 0)
+            age=$((now - mtime))
             if grep -q "\[setup\] done" "$log"; then
                 state=done
-            elif grep -q "\[verify\] memory_efficient_attention_fp32_ok" "$log"; then
+            elif grep -q "\[verify\] memory_efficient_attention_bf16_ok" "$log"; then
                 state=verified
+            elif [[ "$age" -lt 180 ]]; then
+                state=running
             elif grep -qiE "error|failed|traceback|notimplemented" "$log"; then
                 state=failed
             else
                 state=running
             fi
             last=$(tail -n 1 "$log" || true)
-            echo "$pc  $state  $last"
+            echo "$pc  $state  age=${age}s  $last"
         elif [[ -f "$launch_log" ]]; then
             echo "$pc  launch-only  $(tail -n 1 "$launch_log" || true)"
         else

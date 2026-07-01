@@ -1211,8 +1211,8 @@ memory_efficient_attention.cutlassF-blackwell unavailable
 ```
 
 따라서 문제는 object tracking 코드의 분산 스케줄링이 아니라, capture PC의
-`gotrack_cu128` 환경에 설치된 xformers wheel이 Blackwell/SM120용 커널을 포함하지
-않는다는 점이다. import는 성공하지만 실제 GoTrack이 사용하는 FP32
+`gotrack_cu128` runtime이 Blackwell에서 xformers attention을 FP32 입력으로
+호출하고 있다는 점이다. import는 성공하지만 실제 GoTrack이 사용하는 FP32
 `memory_efficient_attention_forward` 호출에서 다음 형태로 실패한다.
 
 ```text
@@ -1220,9 +1220,11 @@ NotImplementedError: No operator found for memory_efficient_attention_forward
 requires device with capability <= (9, 0) but your GPU has capability (12, 0)
 ```
 
-이 문제는 fallback으로 xformers를 끄거나 코드를 우회해서 해결하지 않는다.
-`gotrack_cu128` 안에서 현재 설치된 torch/CUDA와 같은 ABI로 xformers를 source build
-하여 SM120 커널을 포함시키는 방식으로 환경을 다시 맞춘다.
+이 문제는 fallback으로 xformers를 끄거나 CPU/native attention으로 우회해서
+해결하지 않는다. Blackwell용 xformers attention은 FP16/BF16 경로를 사용해야
+하므로, `gotrack_cu128` 안에서 현재 설치된 torch/CUDA ABI에 맞춰 xformers를 다시
+빌드하고, GoTrack subprocess가 `--forward-precision bf16`으로 실행되도록 wrapper
+환경을 맞춘다.
 
 ### 11.2 추가된 환경 스크립트
 
@@ -1231,7 +1233,8 @@ requires device with capability <= (9, 0) but your GPU has capability (12, 0)
   - `gotrack_cu128` conda env를 activate한다.
   - build dependency와 CUDA 12.8 nvcc package를 확인/설치한다.
   - `TORCH_CUDA_ARCH_LIST=12.0`으로 xformers를 source build한다.
-  - 마지막에 실제 실패 지점과 같은 FP32 xformers attention 호출을 실행한다.
+  - 마지막에 실제 실패 지점과 같은 shape의 BF16 xformers attention 호출을
+    실행한다.
 
 - `scripts/launch_gotrack_env_setup.sh`
   - robot PC에서 실행한다.
@@ -1239,10 +1242,17 @@ requires device with capability <= (9, 0) but your GPU has capability (12, 0)
     열어 setup을 background로 시작한다.
   - 이후 상태 확인은 SSH polling이 아니라 공유 로그 파일을 읽는다.
 
+- `scripts/run_batch_object_overlay_with_env.py`
+  - 원본 `src/process/batch_object_overlay.py`는 수정하지 않는다.
+  - wrapper 내부에서 GoTrack subprocess 호출에
+    `--forward-precision bf16`을 주입한다.
+  - 기본값은 `AUTODEX_GOTRACK_FORWARD_PRECISION=bf16`이고, 필요 시 env var로
+    override할 수 있다.
+
 완료 판정 기준:
 
 ```text
-[verify] memory_efficient_attention_fp32_ok ...
+[verify] memory_efficient_attention_bf16_ok ...
 [setup] done
 ```
 

@@ -11,6 +11,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from typing import Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,32 @@ def _nccl_dirs_for_python(python_bin: Path) -> list[Path]:
     ]
 
 
+def _inject_gotrack_precision(cmd: Sequence[object], precision: str) -> list[object]:
+    patched = list(cmd)
+    if not precision or precision == "fp32":
+        return patched
+    if "--forward-precision" in patched:
+        return patched
+    if any(str(part).endswith("run_multiview_gotrack_anchor_online.py") for part in patched):
+        patched.extend(["--forward-precision", precision])
+    return patched
+
+
+class _BatchSubprocessProxy:
+    def __init__(self, module, gotrack_forward_precision: str):
+        self._module = module
+        self._gotrack_forward_precision = gotrack_forward_precision
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def Popen(self, cmd, *args, **kwargs):
+        patched = _inject_gotrack_precision(cmd, self._gotrack_forward_precision)
+        if patched != list(cmd):
+            print(f"[env] injected --forward-precision {self._gotrack_forward_precision}", flush=True)
+        return self._module.Popen(patched, *args, **kwargs)
+
+
 def main() -> int:
     home = Path.home()
     batch = _load_batch_module()
@@ -78,8 +105,11 @@ def main() -> int:
         ),
     )
     _prepend_ld_library_path(*_nccl_dirs_for_python(batch.GOTRACK_PY), *_nccl_dirs_for_python(batch.FPOSE_PY))
+    gotrack_forward_precision = os.environ.get("AUTODEX_GOTRACK_FORWARD_PRECISION", "bf16").strip().lower()
+    batch.subprocess = _BatchSubprocessProxy(batch.subprocess, gotrack_forward_precision)
     print(f"[env] GOTRACK_PY={batch.GOTRACK_PY}", flush=True)
     print(f"[env] FPOSE_PY={batch.FPOSE_PY}", flush=True)
+    print(f"[env] AUTODEX_GOTRACK_FORWARD_PRECISION={gotrack_forward_precision}", flush=True)
     print(f"[env] LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH', '')}", flush=True)
     batch.main()
     return 0

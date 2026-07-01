@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Rebuild xformers in the gotrack_cu128 env for Blackwell / SM120 GPUs.
 #
-# The cu128 xformers wheel can import successfully while still lacking
-# SM120 kernels. GoTrack's DINOv2 path then fails at runtime with:
+# The cu128 xformers wheel can import successfully while GoTrack's DINOv2 path
+# still fails on Blackwell if it feeds FP32 tensors into xformers:
 #   No operator found for memory_efficient_attention_forward
 #
-# This script intentionally fixes the environment instead of disabling
-# xformers in code.
+# xformers' Blackwell attention kernels support FP16/BF16, not FP32. This
+# script fixes the environment and verifies the BF16 xformers path instead of
+# disabling xformers in code.
 set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-gotrack_cu128}"
@@ -127,12 +128,12 @@ if not torch.cuda.is_available():
     raise SystemExit("CUDA is not available")
 
 torch.cuda.empty_cache()
-q = torch.randn((48, 405, 6, 64), device="cuda", dtype=torch.float32)
+q = torch.randn((48, 405, 6, 64), device="cuda", dtype=torch.bfloat16)
 k = torch.randn_like(q)
 v = torch.randn_like(q)
 y = memory_efficient_attention(q, k, v)
 torch.cuda.synchronize()
-print("[verify] memory_efficient_attention_fp32_ok", tuple(y.shape), y.dtype, flush=True)
+print("[verify] memory_efficient_attention_bf16_ok", tuple(y.shape), y.dtype, flush=True)
 PY
 }
 

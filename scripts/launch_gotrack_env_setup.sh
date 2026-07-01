@@ -20,6 +20,7 @@ LOG_ID="${LOG_ID:-gotrack_sm120_$(date +%Y%m%d_%H%M%S)}"
 LOG_ROOT_REL="AutoDex/object_tracking/env_setup/$LOG_ID"
 LOCAL_LOG_ROOT="$LOCAL_SHARED/$LOG_ROOT_REL"
 STAGGER_SECONDS="${STAGGER_SECONDS:-45}"
+SETUP_ARGS="${SETUP_ARGS:-}"
 ACTION="${1:-launch}"
 
 usage() {
@@ -32,6 +33,7 @@ Environment overrides:
   REMOTE_URL                    Git URL to fetch from. Default: hyunsu-go fork
   LOG_ID                        Stable log id. Default: gotrack_sm120_<timestamp>
   STAGGER_SECONDS               Delay between SSH launches. Default: 45
+  SETUP_ARGS                    Extra args for setup script, e.g. --verify-only
 
 Logs:
   $LOCAL_LOG_ROOT
@@ -86,11 +88,12 @@ mkdir -p "\$LOG_ROOT"
     echo "[launch] host=\$(hostname)"
     echo "[launch] repo=\$REPO"
     echo "[launch] log_root=\$LOG_ROOT"
+    echo "[launch] setup_args=$SETUP_ARGS"
     cd "\$REPO"
     git fetch "$REMOTE_URL" "$BRANCH"
     git checkout -B "$BRANCH" FETCH_HEAD
     chmod +x scripts/setup_gotrack_blackwell_xformers.sh
-    nohup bash scripts/setup_gotrack_blackwell_xformers.sh > "\$LOG_ROOT/$pc.setup.log" 2>&1 &
+    nohup bash scripts/setup_gotrack_blackwell_xformers.sh $SETUP_ARGS > "\$LOG_ROOT/$pc.setup.log" 2>&1 &
     echo \$! > "\$LOG_ROOT/$pc.setup.pid"
     echo "[launch] pid=\$(cat "\$LOG_ROOT/$pc.setup.pid")"
 } > "\$LOG_ROOT/$pc.launch.log" 2>&1

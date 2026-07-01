@@ -1287,6 +1287,15 @@ LOG_ID=gotrack_sm120_20260701 \
 bash scripts/launch_gotrack_env_setup.sh status
 ```
 
+이미 xformers source build가 끝난 PC에서 검증만 다시 실행:
+
+```bash
+PCS="capture3 capture5 capture6" \
+LOG_ID=gotrack_sm120_20260701 \
+SETUP_ARGS=--verify-only \
+bash scripts/launch_gotrack_env_setup.sh launch
+```
+
 공유 로그 위치:
 
 ```text

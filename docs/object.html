@@ -5,250 +5,109 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Object - AutoDex</title>
   <link rel="stylesheet" href="css/style.css">
-  <style>
-    /* Object page specific styles */
-    .controls {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
-    }
-    .obj-select {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--text);
-      padding: 8px 12px;
-      font-size: 0.9em;
-      min-width: 200px;
-    }
-    .view-toggle {
-      display: flex;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-    .view-btn {
-      padding: 8px 16px;
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 0.9em;
-      transition: background 0.2s, color 0.2s;
-    }
-    .view-btn.active {
-      background: var(--accent);
-      color: var(--bg);
-    }
-    .view-btn:hover:not(.active) { color: var(--text); }
-
-    /* Gallery view - compact cards */
-    .grasp-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 12px;
-    }
-    .grasp-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-      cursor: pointer;
-      transition: border-color 0.2s, transform 0.15s;
-    }
-    .grasp-card:hover {
-      border-color: var(--accent);
-      transform: translateY(-2px);
-    }
-    .grasp-card video {
-      width: 100%;
-      aspect-ratio: 16/9;
-      background: #000;
-      pointer-events: none;
-    }
-    .grasp-card .card-footer {
-      padding: 6px 10px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.85em;
-    }
-    .badge {
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 0.75em;
-      font-weight: 700;
-    }
-    .badge-rank { background: var(--accent); color: var(--bg); }
-    .badge-success { background: var(--green); color: var(--bg); }
-    .badge-fail { background: #f85149; color: #fff; }
-    .badge-untested { background: var(--border); color: var(--text-muted); }
-
-    .dl-btn {
-      background: none; border: none; color: var(--text-muted);
-      cursor: pointer; font-size: 0.85em; padding: 2px 4px;
-      transition: color 0.2s;
-    }
-    .dl-btn:hover { color: var(--accent); }
-
-    /* Stats bar */
-    .exp-stats {
-      display: flex;
-      gap: 16px;
-      margin-bottom: 16px;
-      padding: 12px 16px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      font-size: 0.9em;
-      flex-wrap: wrap;
-    }
-    .exp-stats .stat { display: flex; align-items: center; gap: 6px; }
-    .stat-dot {
-      width: 10px; height: 10px; border-radius: 50%; display: inline-block;
-    }
-    .stat-dot.success { background: var(--green); }
-    .stat-dot.fail { background: #f85149; }
-    .stat-dot.untested { background: var(--border); }
-
-    /* Experiments view - side by side */
-    .exp-list { display: flex; flex-direction: column; gap: 24px; }
-    .exp-row {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-    .exp-row-header {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .exp-row-header h3 { font-size: 1em; }
-    .exp-videos {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1px;
-      background: var(--border);
-    }
-    .exp-video-cell {
-      background: var(--surface);
-      padding: 8px;
-    }
-    .exp-video-cell .cell-label {
-      font-size: 0.8em;
-      color: var(--text-muted);
-      margin-bottom: 4px;
-    }
-    .exp-video-cell video {
-      width: 100%;
-      aspect-ratio: 16/9;
-      background: #000;
-      border-radius: 4px;
-    }
-
-    .cam-select {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      color: var(--text);
-      padding: 4px 8px;
-      font-size: 0.8em;
-    }
-
-    .empty-state {
-      text-align: center;
-      padding: 60px 24px;
-      color: var(--text-muted);
-    }
-
-    .grasp-count {
-      color: var(--text-muted);
-      font-size: 0.9em;
-    }
-
-    @media (max-width: 640px) {
-      .grasp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-      .exp-videos { grid-template-columns: 1fr; }
-    }
-  </style>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 </head>
 <body>
   <nav class="nav">
     <a class="nav-logo" href="index.html">AutoDex</a>
-    <a href="gallery.html">Gallery</a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="gallery.html" class="cta">Gallery</a>
+      <a href="experiments.html">Experiments</a>
+    </div>
   </nav>
 
-  <div class="container">
-    <!-- Hand tabs -->
-    <div class="tabs" id="hand-tabs"></div>
+  <main class="container">
+    <a class="back-link" href="gallery.html">&larr; Gallery</a>
+    <div class="object-layout">
+      <aside>
+        <section class="object-summary" id="object-summary">
+          <div class="thumb-slot"></div>
+          <div class="object-summary-body">
+            <h1>Loading</h1>
+            <div class="sub">-</div>
+          </div>
+        </section>
+        <section class="asset-panel">
+          <h2>3D Asset</h2>
+          <div class="model-shell" id="asset-viewer">
+            <div class="asset-empty">Pending upload</div>
+          </div>
+        </section>
+      </aside>
 
-    <!-- Controls row -->
-    <div class="controls">
-      <select class="obj-select" id="obj-select"></select>
-      <div class="view-toggle">
-        <button class="view-btn active" data-view="gallery">Gallery</button>
-        <button class="view-btn" data-view="experiments">Experiments</button>
-      </div>
-      <span class="grasp-count" id="grasp-count"></span>
+      <section>
+        <div class="tabs" id="hand-tabs"></div>
+        <div class="controls">
+          <select class="obj-select" id="obj-select"></select>
+          <div class="view-toggle">
+            <button class="view-btn active" data-view="gallery">Candidates</button>
+            <button class="view-btn" data-view="experiments">Experiments</button>
+          </div>
+          <span class="grasp-count" id="grasp-count"></span>
+        </div>
+        <div id="content"><div class="loading">Loading</div></div>
+      </section>
     </div>
-
-    <!-- Content -->
-    <div id="content">
-      <div class="loading">Loading...</div>
-    </div>
-  </div>
+  </main>
 
   <script>
     const HF_BASE = 'https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main';
     const params = new URLSearchParams(location.search);
 
     let catalog = [];
+    let assets = {objects: {}};
     let currentObj = params.get('obj') || null;
     let currentHand = params.get('hand') || 'allegro';
     let currentView = params.get('view') || 'gallery';
-    let experiments = {}; // Will be loaded from experiments.json
+    let experiments = {};
 
-    // Init
     Promise.all([
       fetch('catalog.json').then(r => r.json()),
-      fetch('experiments.json').then(r => r.json()).catch(() => ({}))
-    ]).then(([cat, exp]) => {
+      fetch('experiments.json').then(r => r.json()).catch(() => ({})),
+      fetch('assets3d.json').then(r => r.json()).catch(() => ({objects: {}}))
+    ]).then(([cat, exp, assetManifest]) => {
       catalog = cat;
       experiments = exp;
+      assets = assetManifest || {objects: {}};
       if (!currentObj && catalog.length > 0) currentObj = catalog[0].id;
+      if (!getObjData()?.hands[currentHand]) {
+        currentHand = getObjData()?.hands.allegro ? 'allegro' : 'inspire';
+      }
       initUI();
       render();
     });
 
-    function initUI() {
-      // Hand tabs
-      renderHandTabs();
+    function assetEntry(id) {
+      return (assets.objects || {})[id] || null;
+    }
 
-      // Object selector
+    function assetUrl(id) {
+      const item = assetEntry(id);
+      if (!item) return '';
+      if (item.url) return item.url;
+      const rel = item.glb || item.gltf || '';
+      if (!rel) return '';
+      const base = assets.base_url || '';
+      return base ? `${base.replace(/\/$/, '')}/${rel.replace(/^\//, '')}` : rel;
+    }
+
+    function initUI() {
+      renderHandTabs();
       const select = document.getElementById('obj-select');
-      const objs = catalog.filter(o => o.hands[currentHand]);
-      select.innerHTML = objs.map(o =>
-        `<option value="${o.id}" ${o.id === currentObj ? 'selected' : ''}>${o.name}</option>`
-      ).join('');
       select.addEventListener('change', e => {
         currentObj = e.target.value;
+        if (!getObjData()?.hands[currentHand]) {
+          currentHand = getObjData()?.hands.allegro ? 'allegro' : 'inspire';
+        }
         updateURL();
+        initUI();
         render();
       });
 
-      // View toggle
       document.querySelectorAll('.view-btn').forEach(btn => {
-        if (btn.dataset.view === currentView) btn.classList.add('active');
-        else btn.classList.remove('active');
+        btn.classList.toggle('active', btn.dataset.view === currentView);
         btn.addEventListener('click', () => {
-          document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
           currentView = btn.dataset.view;
           updateURL();
           render();
@@ -261,28 +120,28 @@
       const tabsEl = document.getElementById('hand-tabs');
       tabsEl.innerHTML = hands.map(h => {
         const count = catalog.filter(o => o.hands[h]).length;
-        const active = h === currentHand ? 'active' : '';
-        return `<button class="tab ${active}" data-hand="${h}">${h.charAt(0).toUpperCase() + h.slice(1)} (${count})</button>`;
+        return `<button class="tab ${h === currentHand ? 'active' : ''}" data-hand="${h}">${labelHand(h)} (${count})</button>`;
       }).join('');
       tabsEl.querySelectorAll('.tab').forEach(btn => {
         btn.addEventListener('click', () => {
           currentHand = btn.dataset.hand;
-          // Update object list
-          const select = document.getElementById('obj-select');
           const objs = catalog.filter(o => o.hands[currentHand]);
-          select.innerHTML = objs.map(o =>
-            `<option value="${o.id}" ${o.id === currentObj ? 'selected' : ''}>${o.name}</option>`
-          ).join('');
-          // If current obj not in this hand, switch to first
-          if (!objs.find(o => o.id === currentObj)) {
-            currentObj = objs[0]?.id;
-            select.value = currentObj;
-          }
-          renderHandTabs();
+          if (!objs.find(o => o.id === currentObj)) currentObj = objs[0]?.id;
           updateURL();
+          initUI();
           render();
         });
       });
+
+      const select = document.getElementById('obj-select');
+      const objs = catalog.filter(o => o.hands[currentHand]);
+      select.innerHTML = objs.map(o =>
+        `<option value="${o.id}" ${o.id === currentObj ? 'selected' : ''}>${o.name}</option>`
+      ).join('');
+    }
+
+    function labelHand(hand) {
+      return hand.charAt(0).toUpperCase() + hand.slice(1);
     }
 
     function updateURL() {
@@ -291,7 +150,7 @@
       p.set('hand', currentHand);
       p.set('view', currentView);
       history.replaceState(null, '', `object.html?${p}`);
-      document.title = `${currentObj?.replace(/_/g, ' ') || 'Object'} - AutoDex`;
+      document.title = `${getObjData()?.name || 'Object'} - AutoDex`;
     }
 
     function getObjData() {
@@ -299,12 +158,36 @@
     }
 
     function getExpData(graspIdx) {
-      // experiments[hand][obj][graspIdx] = { status, cameras: [...serials], merged: true/false }
       const handExp = experiments[currentHand];
       if (!handExp) return null;
       const objExp = handExp[currentObj];
       if (!objExp) return null;
       return objExp[String(graspIdx)] || null;
+    }
+
+    function renderSummary(obj, count, nSuccess, nFail, nUntested) {
+      const thumbSrc = obj.has_thumbnail
+        ? `objects/${obj.id}/thumb.png`
+        : `https://via.placeholder.com/320/f5f0e9/8a8178?text=${encodeURIComponent(obj.name)}`;
+      document.getElementById('object-summary').innerHTML = `
+        <img src="${thumbSrc}" alt="${obj.name}">
+        <div class="object-summary-body">
+          <h1>${obj.name}</h1>
+          <div class="sub">${labelHand(currentHand)} · ${count} candidates</div>
+          <div class="hands-info" style="padding:12px 0 0">
+            <span class="chip ok">${nSuccess} success</span>
+            <span class="chip warn">${nFail} failed</span>
+            <span class="chip">${nUntested} untested</span>
+          </div>
+        </div>`;
+
+      const url = assetUrl(obj.id);
+      const viewer = document.getElementById('asset-viewer');
+      if (url) {
+        viewer.innerHTML = `<model-viewer src="${url}" camera-controls auto-rotate shadow-intensity="0.6" exposure="0.9" ar ar-modes="webxr scene-viewer quick-look"></model-viewer>`;
+      } else {
+        viewer.innerHTML = '<div class="asset-empty">3D asset not uploaded yet</div>';
+      }
     }
 
     function render() {
@@ -315,7 +198,6 @@
       }
 
       const count = obj.hands[currentHand] || 0;
-      // Count stats
       let nSuccess = 0, nFail = 0, nUntested = 0;
       for (let i = 0; i < count; i++) {
         const exp = getExpData(i);
@@ -323,17 +205,19 @@
         else if (exp.status === 'success') nSuccess++;
         else nFail++;
       }
+      renderSummary(obj, count, nSuccess, nFail, nUntested);
       document.getElementById('grasp-count').innerHTML =
-        `<span class="stat"><span class="stat-dot success"></span> ${nSuccess}</span>` +
-        `<span class="stat"><span class="stat-dot fail"></span> ${nFail}</span>` +
-        `<span class="stat"><span class="stat-dot untested"></span> ${nUntested}</span>` +
-        `<span style="color:var(--text-muted)">/ ${count} total</span>`;
+        `<span class="stat"><span class="stat-dot success"></span>${nSuccess}</span>` +
+        `<span class="stat"><span class="stat-dot fail"></span>${nFail}</span>` +
+        `<span class="stat"><span class="stat-dot untested"></span>${nUntested}</span>` +
+        `<span>/ ${count} total</span>`;
 
-      if (currentView === 'gallery') {
-        renderGallery(obj, count);
-      } else {
-        renderExperiments(obj, count);
-      }
+      document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === currentView);
+      });
+
+      if (currentView === 'gallery') renderGallery(obj, count);
+      else renderExperiments(obj, count);
     }
 
     function renderGallery(obj, count) {
@@ -343,14 +227,14 @@
         const rank = String(i).padStart(3, '0');
         const videoUrl = `${HF_BASE}/turntable/${currentHand}/${currentObj}/${rank}/turntable.mp4`;
         const exp = getExpData(i);
-        let badgeHtml = '<span class="badge badge-untested">-</span>';
+        let badgeHtml = '<span class="badge badge-untested">Untested</span>';
         if (exp) {
           badgeHtml = exp.status === 'success'
-            ? '<span class="badge badge-success">OK</span>'
-            : '<span class="badge badge-fail">FAIL</span>';
+            ? '<span class="badge badge-success">Success</span>'
+            : '<span class="badge badge-fail">Failed</span>';
         }
         html += `
-          <div class="grasp-card" data-idx="${i}">
+          <article class="grasp-card" data-idx="${i}">
             <video data-src="${videoUrl}" preload="none" loop muted playsinline autoplay></video>
             <div class="card-footer">
               <span class="badge badge-rank">#${i + 1}</span>
@@ -359,39 +243,33 @@
                 <button class="dl-btn" title="Download" onclick="event.stopPropagation();downloadVideo('${videoUrl}','${currentObj}_${currentHand}_${rank}.mp4')">&#x2B07;</button>
               </span>
             </div>
-          </div>`;
+          </article>`;
       }
       html += '</div>';
       content.innerHTML = html;
 
-      // Lazy load: only set src when video scrolls into view
       const observer = new IntersectionObserver((entries) => {
-        entries.forEach(e => {
-          if (e.isIntersecting) {
-            const video = e.target.querySelector('video');
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const video = entry.target.querySelector('video');
             if (video && video.dataset.src && !video.src) {
               video.src = video.dataset.src;
               video.load();
               video.play().catch(() => {});
             }
-            observer.unobserve(e.target);
+            observer.unobserve(entry.target);
           }
         });
-      }, { rootMargin: '200px' });
+      }, { rootMargin: '220px' });
       content.querySelectorAll('.grasp-card').forEach(card => observer.observe(card));
 
-      // Click to jump to experiments view for this grasp
       content.querySelectorAll('.grasp-card').forEach(card => {
         card.addEventListener('click', () => {
-          const idx = card.dataset.idx;
           currentView = 'experiments';
-          document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
-          document.querySelector('.view-btn[data-view="experiments"]').classList.add('active');
           updateURL();
           render();
-          // Scroll to the specific grasp
           setTimeout(() => {
-            const el = document.getElementById(`exp-${idx}`);
+            const el = document.getElementById(`exp-${card.dataset.idx}`);
             if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }, 100);
         });
@@ -400,19 +278,17 @@
 
     function renderExperiments(obj, count) {
       const content = document.getElementById('content');
-
-      // Collect grasps that have experiment data
-      let expGrasps = [];
+      const expGrasps = [];
       for (let i = 0; i < count; i++) {
         const exp = getExpData(i);
         if (exp) expGrasps.push({ idx: i, exp });
       }
 
-      if (expGrasps.length === 0) {
+      if (!expGrasps.length) {
         content.innerHTML = `
           <div class="empty-state">
             <h2>No experiments yet</h2>
-            <p>Experiment videos for ${obj.name} (${currentHand}) will appear here once uploaded.</p>
+            <p>${obj.name} ${labelHand(currentHand)} trials will appear here once uploaded.</p>
           </div>`;
         return;
       }
@@ -424,29 +300,26 @@
         const statusBadge = exp.status === 'success'
           ? '<span class="badge badge-success">Success</span>'
           : '<span class="badge badge-fail">Failed</span>';
-
-        // Camera selector for experiment videos
         const cameras = exp.cameras || [];
         const hasMerged = exp.merged !== false;
         let camOptions = '';
         if (hasMerged) camOptions += '<option value="merged">Merged</option>';
         cameras.forEach(s => { camOptions += `<option value="${s}">${s}</option>`; });
-
         const defaultCam = hasMerged ? 'merged' : (cameras[0] || '');
         const expVideoUrl = defaultCam
           ? `${HF_BASE}/experiments/${currentHand}/${currentObj}/${rank}/${defaultCam}.mp4`
           : '';
 
         html += `
-          <div class="exp-row" id="exp-${idx}">
+          <section class="exp-row" id="exp-${idx}">
             <div class="exp-row-header">
-              <h3>Grasp #${idx + 1} ${statusBadge}</h3>
+              <h3>Candidate #${idx + 1} ${statusBadge}</h3>
               <span>
                 ${cameras.length > 0 || hasMerged ? `
                   <select class="cam-select" data-idx="${idx}" onchange="switchCam(this)">
                     ${camOptions}
                   </select>` : ''}
-                <a href="detail.html?hand=${currentHand}&obj=${currentObj}&rank=${idx}" style="margin-left:8px;font-size:0.85em;">Detail &rarr;</a>
+                <a href="detail.html?hand=${currentHand}&obj=${currentObj}&rank=${idx}" style="margin-left:8px;font-size:.86em;font-weight:700;">Detail &rarr;</a>
               </span>
             </div>
             <div class="exp-videos">
@@ -461,7 +334,7 @@
                 ${!expVideoUrl ? '<div class="empty-state" style="padding:20px">No video available</div>' : ''}
               </div>
             </div>
-          </div>`;
+          </section>`;
       }
       html += '</div>';
       content.innerHTML = html;

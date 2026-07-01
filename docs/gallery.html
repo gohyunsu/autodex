@@ -9,58 +9,151 @@
 <body>
   <nav class="nav">
     <a class="nav-logo" href="index.html">AutoDex</a>
-    <a href="gallery.html" class="active">Gallery</a>
-    <a href="experiments.html">Experiments</a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="gallery.html" class="cta">Gallery</a>
+      <a href="experiments.html">Experiments</a>
+    </div>
   </nav>
 
-  <div class="container">
-    <input type="text" class="search-bar" id="search" placeholder="Search objects...">
+  <main class="container">
+    <header class="page-hero">
+      <h1 class="page-title">Object Gallery</h1>
+      <p class="page-subtitle">Everyday objects paired with Allegro and Inspire grasp candidates, experiment status, and future 3D assets.</p>
+      <section class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">Objects</div>
+          <div class="metric-value" id="metric-objects">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Allegro Objects</div>
+          <div class="metric-value" id="metric-allegro">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Inspire Objects</div>
+          <div class="metric-value" id="metric-inspire">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">3D Assets</div>
+          <div class="metric-value" id="metric-assets">-</div>
+        </div>
+      </section>
+    </header>
+
+    <section class="toolbar">
+      <input type="text" class="search-bar" id="search" placeholder="Search objects">
+      <select class="control-select" id="hand-filter" aria-label="Hand filter">
+        <option value="all">All hands</option>
+        <option value="allegro">Allegro</option>
+        <option value="inspire">Inspire</option>
+      </select>
+      <select class="control-select" id="sort" aria-label="Sort objects">
+        <option value="name">Name</option>
+        <option value="coverage">Coverage</option>
+        <option value="assets">3D assets</option>
+      </select>
+    </section>
+
     <div class="stats-bar" id="stats"></div>
-    <div class="grid" id="grid"></div>
-  </div>
+    <section class="grid" id="grid"></section>
+  </main>
 
   <script>
-    const HF_BASE = 'https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main';
     let catalog = [];
+    let assets = {objects: {}};
 
-    fetch('catalog.json')
-      .then(r => r.json())
-      .then(data => {
-        catalog = data;
-        render(catalog);
-        updateStats(catalog);
+    Promise.all([
+      fetch('catalog.json').then(r => r.json()),
+      fetch('assets3d.json').then(r => r.json()).catch(() => ({objects: {}}))
+    ]).then(([cat, assetManifest]) => {
+      catalog = cat;
+      assets = assetManifest || {objects: {}};
+      updateMetrics();
+      render();
+    });
+
+    function assetEntry(id) {
+      return (assets.objects || {})[id] || null;
+    }
+
+    function hasAsset(id) {
+      const item = assetEntry(id);
+      return Boolean(item && (item.url || item.glb || item.gltf));
+    }
+
+    function updateMetrics() {
+      const allegro = catalog.filter(o => o.hands.allegro).length;
+      const inspire = catalog.filter(o => o.hands.inspire).length;
+      const assetCount = catalog.filter(o => hasAsset(o.id)).length;
+      document.getElementById('metric-objects').textContent = catalog.length;
+      document.getElementById('metric-allegro').textContent = allegro;
+      document.getElementById('metric-inspire').textContent = inspire;
+      document.getElementById('metric-assets').textContent = assetCount;
+    }
+
+    function filteredItems() {
+      const q = document.getElementById('search').value.trim().toLowerCase();
+      const hand = document.getElementById('hand-filter').value;
+      const sort = document.getElementById('sort').value;
+      let items = catalog.filter(o => {
+        const text = `${o.id} ${o.name}`.toLowerCase();
+        const matchesQuery = !q || text.includes(q);
+        const matchesHand = hand === 'all' || Boolean(o.hands[hand]);
+        return matchesQuery && matchesHand;
       });
+      items = items.slice().sort((a, b) => {
+        if (sort === 'coverage') {
+          const ca = Number(a.hands.allegro || 0) + Number(a.hands.inspire || 0);
+          const cb = Number(b.hands.allegro || 0) + Number(b.hands.inspire || 0);
+          return cb - ca || a.name.localeCompare(b.name);
+        }
+        if (sort === 'assets') {
+          return Number(hasAsset(b.id)) - Number(hasAsset(a.id)) || a.name.localeCompare(b.name);
+        }
+        return a.name.localeCompare(b.name);
+      });
+      return items;
+    }
 
     function updateStats(items) {
       const allegro = items.filter(o => o.hands.allegro).length;
       const inspire = items.filter(o => o.hands.inspire).length;
-      document.getElementById('stats').textContent =
-        `${items.length} objects | ${allegro} with Allegro | ${inspire} with Inspire`;
+      const assetCount = items.filter(o => hasAsset(o.id)).length;
+      const candidates = items.reduce((n, o) => n + Number(o.hands.allegro || 0) + Number(o.hands.inspire || 0), 0);
+      document.getElementById('stats').innerHTML = [
+        `<span class="chip accent">${items.length} objects</span>`,
+        `<span class="chip">${candidates.toLocaleString()} grasp candidates</span>`,
+        `<span class="chip">Allegro ${allegro}</span>`,
+        `<span class="chip">Inspire ${inspire}</span>`,
+        `<span class="chip ${assetCount ? 'ok' : 'warn'}">3D ${assetCount}</span>`
+      ].join('');
     }
 
-    function render(items) {
+    function render() {
+      const items = filteredItems();
+      updateStats(items);
       const grid = document.getElementById('grid');
       grid.innerHTML = items.map(obj => {
         const thumbSrc = obj.has_thumbnail
           ? `objects/${obj.id}/thumb.png`
-          : `https://via.placeholder.com/256/1a1f26/8b949e?text=${obj.id}`;
-        const hands = Object.keys(obj.hands).join(', ');
+          : `https://via.placeholder.com/320/f5f0e9/8a8178?text=${encodeURIComponent(obj.name)}`;
+        const handChips = Object.entries(obj.hands).map(([hand, count]) =>
+          `<span class="chip">${hand} ${count}</span>`).join('');
+        const assetChip = hasAsset(obj.id)
+          ? '<span class="chip ok">3D ready</span>'
+          : '<span class="chip warn">3D pending</span>';
         return `
-          <div class="grid-item" onclick="location.href='object.html?obj=${obj.id}'">
-            <img src="${thumbSrc}" alt="${obj.name}" loading="lazy">
-            <div class="label">${obj.name}</div>
-            <div class="hands-info">${hands}</div>
-          </div>`;
-      }).join('');
+          <article class="grid-item" onclick="location.href='object.html?obj=${obj.id}'">
+            <div class="thumb-slot"><img src="${thumbSrc}" alt="${obj.name}" loading="lazy"></div>
+            <div class="label" title="${obj.name}">${obj.name}</div>
+            <div class="hands-info">${handChips}${assetChip}</div>
+          </article>`;
+      }).join('') || '<div class="empty-state">No matching objects</div>';
     }
 
-    document.getElementById('search').addEventListener('input', e => {
-      const q = e.target.value.toLowerCase();
-      const filtered = catalog.filter(o =>
-        o.id.includes(q) || o.name.toLowerCase().includes(q)
-      );
-      render(filtered);
-      updateStats(filtered);
+    ['search', 'hand-filter', 'sort'].forEach(id => {
+      document.getElementById(id).addEventListener('input', render);
+      document.getElementById(id).addEventListener('change', render);
     });
   </script>
 </body>

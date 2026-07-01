@@ -8,41 +8,66 @@
 </head>
 <body>
   <nav class="nav">
-    <span class="nav-logo">AutoDex</span>
-    <a href="gallery.html">Gallery</a>
-    <a href="experiments.html">Experiments</a>
+    <a class="nav-logo" href="index.html">AutoDex</a>
+    <div class="nav-links">
+      <a href="index.html" class="active">Overview</a>
+      <a href="gallery.html" class="cta">Gallery</a>
+      <a href="experiments.html">Experiments</a>
+    </div>
   </nav>
 
-  <div class="landing">
+  <main class="landing">
     <h1>AutoDex</h1>
-    <p>Dexterous Manipulation: Grasp Generation & Experiment Results</p>
+    <p>Dexterous robot grasp candidates, object assets, and real execution videos across everyday objects.</p>
+
+    <section class="metric-grid" style="width:min(980px,100%);">
+      <div class="metric-card">
+        <div class="metric-label">Objects</div>
+        <div class="metric-value" id="obj-count">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Allegro Candidates</div>
+        <div class="metric-value" id="allegro-count">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Inspire Candidates</div>
+        <div class="metric-value" id="inspire-count">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Experiments</div>
+        <div class="metric-value" id="exp-count">-</div>
+      </div>
+    </section>
+
     <div class="landing-cards">
       <a class="landing-card" href="gallery.html">
-        <div class="card-count" id="obj-count">-</div>
-        <h2>Gallery</h2>
-        <p>Browse objects and grasp candidates</p>
+        <div class="card-count">100</div>
+        <h2>Object Gallery</h2>
+        <p>Browse objects, hand coverage, grasp turntables, and 3D asset availability.</p>
       </a>
       <a class="landing-card" href="experiments.html">
-        <div class="card-count" id="exp-count">-</div>
-        <h2>Experiments</h2>
-        <p>Watch real robot execution videos</p>
+        <div class="card-count" id="exp-card-count">-</div>
+        <h2>Execution Videos</h2>
+        <p>Inspect real robot trials with linked turntable candidates and camera views.</p>
       </a>
     </div>
-  </div>
+  </main>
 
   <script>
-    fetch('catalog.json')
-      .then(r => r.json())
-      .then(data => {
-        document.getElementById('obj-count').textContent = data.length;
-      });
-    fetch('experiments.json')
-      .then(r => r.json())
-      .then(exp => {
-        const total = Object.values(exp).reduce((s, h) =>
-          s + Object.values(h).reduce((s2, o) => s2 + Object.keys(o).length, 0), 0);
-        document.getElementById('exp-count').textContent = total;
-      }).catch(() => { document.getElementById('exp-count').textContent = '0'; });
+    Promise.all([
+      fetch('catalog.json').then(r => r.json()),
+      fetch('experiments.json').then(r => r.json()).catch(() => ({}))
+    ]).then(([catalog, experiments]) => {
+      const allegro = catalog.reduce((n, o) => n + Number(o.hands.allegro || 0), 0);
+      const inspire = catalog.reduce((n, o) => n + Number(o.hands.inspire || 0), 0);
+      const totalExp = Object.values(experiments).reduce((sum, hand) =>
+        sum + Object.values(hand || {}).reduce((s2, obj) => s2 + Object.keys(obj || {}).length, 0), 0);
+      document.getElementById('obj-count').textContent = catalog.length;
+      document.getElementById('allegro-count').textContent = allegro.toLocaleString();
+      document.getElementById('inspire-count').textContent = inspire.toLocaleString();
+      document.getElementById('exp-count').textContent = totalExp.toLocaleString();
+      document.getElementById('exp-card-count').textContent = totalExp.toLocaleString();
+    });
   </script>
 </body>
 </html>

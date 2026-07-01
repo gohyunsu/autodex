@@ -185,8 +185,14 @@ class EpisodeScheduleStore:
         manifest = load_json(Path(schedule_dir).expanduser() / "manifest.json", {})
         return cls(
             schedule_dir=Path(schedule_dir).expanduser(),
-            experiment_root=Path(manifest.get("experiment_root", DEFAULT_EXPERIMENT_ROOT)),
-            overlay_root=Path(manifest.get("overlay_root", DEFAULT_OVERLAY_ROOT)),
+            experiment_root=Path(os.environ.get(
+                "AUTODEX_EXPERIMENT_ROOT",
+                manifest.get("experiment_root", DEFAULT_EXPERIMENT_ROOT),
+            )),
+            overlay_root=Path(os.environ.get(
+                "AUTODEX_OVERLAY_ROOT",
+                manifest.get("overlay_root", DEFAULT_OVERLAY_ROOT),
+            )),
             stages=str(manifest.get("stages", "both")),
             schedule_id=str(manifest.get("schedule_id", Path(schedule_dir).name)),
         )

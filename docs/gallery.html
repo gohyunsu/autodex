@@ -3,8 +3,553 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gallery - AutoDex</title>
+  <title>Dataset Gallery - AutoDex</title>
   <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    .viewer-container {
+      max-width: 1500px;
+      padding-top: 18px;
+    }
+
+    .gallery-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 18px;
+      margin-bottom: 14px;
+    }
+
+    .gallery-kicker {
+      color: var(--accent-hover);
+      font-size: .78em;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .gallery-title {
+      margin-top: 4px;
+      font-size: clamp(2rem, 4vw, 4rem);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .gallery-copy {
+      max-width: 860px;
+      margin-top: 10px;
+      color: var(--text-muted);
+      font-size: 1.02em;
+      line-height: 1.5;
+    }
+
+    .summary-pills {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .explorer-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .control-deck,
+    .viewer-main,
+    .context-panel,
+    .thumb-drawer {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .control-deck {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: minmax(160px, 1.15fr) repeat(5, minmax(118px, .8fr)) auto;
+      gap: 8px;
+      padding: 10px;
+      align-items: end;
+    }
+
+    .field label,
+    .switch-title {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--text-muted);
+      font-size: .72em;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .field input,
+    .field select {
+      min-height: 38px;
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      border-color: var(--accent);
+    }
+
+    .switch-stack {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      min-width: 190px;
+    }
+
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      color: var(--text-muted);
+      font-size: .82em;
+      font-weight: 800;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .switch input {
+      appearance: none;
+      width: 32px;
+      height: 18px;
+      position: relative;
+      border-radius: 999px;
+      background: var(--line-strong);
+      outline: none;
+      transition: background .16s;
+    }
+
+    .switch input::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform .16s;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .2);
+    }
+
+    .switch input:checked {
+      background: var(--accent);
+    }
+
+    .switch input:checked::after {
+      transform: translateX(14px);
+    }
+
+    .viewer-main {
+      overflow: hidden;
+    }
+
+    .viewer-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .selected-title {
+      min-width: 0;
+    }
+
+    .selected-title h2 {
+      font-size: 1.08em;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .selected-title .sub {
+      margin-top: 2px;
+      color: var(--text-muted);
+      font-size: .82em;
+    }
+
+    .mode-tabs {
+      display: inline-flex;
+      flex: 0 0 auto;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+
+    .mode-btn {
+      min-height: 34px;
+      padding: 7px 12px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: .84em;
+      font-weight: 800;
+    }
+
+    .mode-btn:last-child {
+      border-right: 0;
+    }
+
+    .mode-btn.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .screen-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #080808;
+    }
+
+    .screen-wrap video,
+    .screen-wrap model-viewer,
+    .screen-placeholder {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .screen-wrap video {
+      display: block;
+      object-fit: contain;
+      background: #080808;
+    }
+
+    .screen-placeholder {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      color: rgba(255, 255, 255, .82);
+      text-align: center;
+      background:
+        linear-gradient(135deg, rgba(226, 96, 59, .16), rgba(20, 20, 20, .2)),
+        #111;
+    }
+
+    .screen-placeholder.visible {
+      display: flex;
+    }
+
+    .placeholder-box {
+      width: min(460px, 100%);
+    }
+
+    .placeholder-box h3 {
+      margin-bottom: 8px;
+      color: #fff;
+      font-size: 1.02em;
+    }
+
+    .placeholder-box p {
+      color: rgba(255, 255, 255, .72);
+      font-size: .9em;
+      line-height: 1.45;
+    }
+
+    .playback-rail {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 54px;
+      align-items: center;
+      gap: 8px;
+      margin-top: 16px;
+      color: rgba(255, 255, 255, .68);
+      font-size: .78em;
+      font-weight: 800;
+    }
+
+    .playback-rail input {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .camera-strip {
+      display: flex;
+      gap: 6px;
+      padding: 10px;
+      overflow-x: auto;
+      border-top: 1px solid var(--line);
+      background: #fcfbf9;
+    }
+
+    .cam-btn {
+      flex: 0 0 auto;
+      min-height: 30px;
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--text-muted);
+      font-size: .76em;
+      font-weight: 800;
+    }
+
+    .cam-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-hover);
+    }
+
+    .side-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .context-panel {
+      padding: 14px;
+    }
+
+    .panel-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .panel-heading h3 {
+      font-size: .94em;
+      line-height: 1.2;
+    }
+
+    .meta-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .meta-row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      font-size: .88em;
+    }
+
+    .meta-row .key {
+      color: var(--text-muted);
+      font-weight: 800;
+    }
+
+    .meta-row .value {
+      min-width: 0;
+      color: var(--text);
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .definition-list {
+      display: grid;
+      gap: 9px;
+      color: var(--text-muted);
+      font-size: .84em;
+      line-height: 1.4;
+    }
+
+    .definition-list strong {
+      display: block;
+      color: var(--text);
+      font-size: .95em;
+    }
+
+    .asset-state {
+      display: grid;
+      gap: 8px;
+    }
+
+    .asset-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--text-muted);
+      font-size: .85em;
+      font-weight: 700;
+    }
+
+    .thumb-drawer {
+      grid-column: 1 / -1;
+      display: none;
+      padding: 12px;
+    }
+
+    .thumb-drawer.open {
+      display: block;
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .drawer-head h3 {
+      font-size: .98em;
+    }
+
+    .drawer-head span {
+      color: var(--text-muted);
+      font-size: .82em;
+      font-weight: 700;
+    }
+
+    .object-strip,
+    .pose-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+      gap: 10px;
+    }
+
+    .object-tile,
+    .pose-tile {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      text-align: left;
+      transition: border-color .16s, box-shadow .16s, transform .16s;
+    }
+
+    .object-tile:hover,
+    .pose-tile:hover,
+    .object-tile.active,
+    .pose-tile.active {
+      border-color: var(--accent);
+      box-shadow: var(--shadow-lift);
+      transform: translateY(-1px);
+    }
+
+    .object-tile img,
+    .pose-tile video {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      display: block;
+      background: var(--surface-2);
+      object-fit: cover;
+    }
+
+    .object-tile img {
+      aspect-ratio: 1;
+    }
+
+    .tile-body {
+      padding: 8px 9px 9px;
+    }
+
+    .tile-title {
+      font-size: .86em;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tile-sub {
+      margin-top: 3px;
+      color: var(--text-muted);
+      font-size: .76em;
+      font-weight: 700;
+    }
+
+    .status-line {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .empty-inline {
+      padding: 24px;
+      color: var(--text-muted);
+      text-align: center;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    @media (max-width: 1180px) {
+      .control-deck {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .switch-stack {
+        min-width: 0;
+      }
+
+      .explorer-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .side-stack {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .viewer-container {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .gallery-head,
+      .control-deck,
+      .side-stack {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-pills {
+        justify-content: flex-start;
+      }
+
+      .viewer-topbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .mode-tabs,
+      .mode-btn {
+        width: 100%;
+      }
+
+      .mode-btn {
+        flex: 1;
+      }
+
+      .meta-row {
+        grid-template-columns: 86px minmax(0, 1fr);
+      }
+    }
+  </style>
 </head>
 <body>
   <nav class="nav">
@@ -16,145 +561,657 @@
     </div>
   </nav>
 
-  <main class="container">
-    <header class="page-hero">
-      <h1 class="page-title">Object Gallery</h1>
-      <p class="page-subtitle">Everyday objects paired with Allegro and Inspire grasp candidates, experiment status, and future 3D assets.</p>
-      <section class="metric-grid">
-        <div class="metric-card">
-          <div class="metric-label">Objects</div>
-          <div class="metric-value" id="metric-objects">-</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Allegro Objects</div>
-          <div class="metric-value" id="metric-allegro">-</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Inspire Objects</div>
-          <div class="metric-value" id="metric-inspire">-</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">3D Assets</div>
-          <div class="metric-value" id="metric-assets">-</div>
-        </div>
-      </section>
+  <main class="container viewer-container">
+    <header class="gallery-head">
+      <div>
+        <div class="gallery-kicker">Dataset Gallery</div>
+        <h1 class="gallery-title">Episode Viewer</h1>
+        <p class="gallery-copy">Select a grasp episode, camera view, and content layer. The captured multi-view recording stays in the main panel; object and pose thumbnails open only when their switches are enabled.</p>
+      </div>
+      <div class="summary-pills" id="summary-pills"></div>
     </header>
 
-    <section class="toolbar">
-      <input type="text" class="search-bar" id="search" placeholder="Search objects">
-      <select class="control-select" id="hand-filter" aria-label="Hand filter">
-        <option value="all">All hands</option>
-        <option value="allegro">Allegro</option>
-        <option value="inspire">Inspire</option>
-      </select>
-      <select class="control-select" id="sort" aria-label="Sort objects">
-        <option value="name">Name</option>
-        <option value="coverage">Coverage</option>
-        <option value="assets">3D assets</option>
-      </select>
+    <section class="control-deck" aria-label="Gallery controls">
+      <div class="field">
+        <label for="search">Search</label>
+        <input id="search" type="search" placeholder="object, grasp, scene">
+      </div>
+      <div class="field">
+        <label for="hand-filter">Hand</label>
+        <select id="hand-filter">
+          <option value="all">All hands</option>
+          <option value="allegro">Allegro</option>
+          <option value="inspire">Inspire</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="status-filter">Outcome</label>
+        <select id="status-filter">
+          <option value="all">All outcomes</option>
+          <option value="success">Success only</option>
+          <option value="fail">Fail only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="scene-filter">Scene</label>
+        <select id="scene-filter">
+          <option value="all">All scenes</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="object-filter">Object</label>
+        <select id="object-filter">
+          <option value="all">All objects</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="episode-select">Episode / grasp</label>
+        <select id="episode-select"></select>
+      </div>
+      <div>
+        <span class="switch-title">Thumbnails</span>
+        <div class="switch-stack">
+          <label class="switch" title="Show object thumbnails">
+            <input id="toggle-objects" type="checkbox">
+            Objects
+          </label>
+          <label class="switch" title="Show pose turntables">
+            <input id="toggle-poses" type="checkbox">
+            Poses
+          </label>
+        </div>
+      </div>
     </section>
 
-    <div class="stats-bar" id="stats"></div>
-    <section class="grid" id="grid"></section>
+    <section class="explorer-layout">
+      <section class="viewer-main" aria-label="Main episode panel">
+        <div class="viewer-topbar">
+          <div class="selected-title">
+            <h2 id="selected-title">Loading...</h2>
+            <div class="sub" id="selected-subtitle"></div>
+          </div>
+          <div class="mode-tabs" role="group" aria-label="Content mode">
+            <button class="mode-btn active" id="mode-video" data-mode="video">Video</button>
+            <button class="mode-btn" id="mode-overlay" data-mode="overlay">Overlay</button>
+            <button class="mode-btn" id="mode-3d" data-mode="reconstruction">Interactive 3D</button>
+          </div>
+        </div>
+
+        <div class="camera-strip" id="camera-strip"></div>
+
+        <div class="screen-wrap">
+          <video id="main-video" controls muted loop playsinline preload="metadata"></video>
+          <div class="screen-placeholder" id="pending-layer">
+            <div class="placeholder-box">
+              <h3 id="pending-title">Asset pending</h3>
+              <p id="pending-copy"></p>
+              <div class="playback-rail">
+                <span>0:00</span>
+                <input type="range" min="0" max="100" value="0" disabled>
+                <span>0:00</span>
+              </div>
+            </div>
+          </div>
+          <model-viewer id="model-viewer" camera-controls auto-rotate shadow-intensity="0.25" style="display:none;"></model-viewer>
+        </div>
+      </section>
+
+      <aside class="side-stack">
+        <section class="context-panel">
+          <div class="panel-heading">
+            <h3>Selected Episode</h3>
+            <span id="status-badge" class="badge">-</span>
+          </div>
+          <div class="meta-list" id="episode-meta"></div>
+        </section>
+
+        <section class="context-panel">
+          <div class="panel-heading">
+            <h3>Terms</h3>
+          </div>
+          <div class="definition-list">
+            <div><strong>Episode</strong>One recorded execution trial for a selected object, hand, grasp candidate, and scene.</div>
+            <div><strong>Grasp</strong>The candidate hand pose used to start the robot execution; this page indexes it by rank.</div>
+            <div><strong>Scene</strong>The capture setup such as shelf, wall, or box, plus its scene identifiers.</div>
+          </div>
+        </section>
+
+        <section class="context-panel">
+          <div class="panel-heading">
+            <h3>Tracking Layers</h3>
+          </div>
+          <div class="asset-state" id="asset-state"></div>
+        </section>
+      </aside>
+
+      <section class="thumb-drawer" id="object-drawer">
+        <div class="drawer-head">
+          <h3>Object Thumbnails</h3>
+          <span id="object-count"></span>
+        </div>
+        <div class="object-strip" id="object-strip"></div>
+      </section>
+
+      <section class="thumb-drawer" id="pose-drawer">
+        <div class="drawer-head">
+          <h3>Pose Turntables</h3>
+          <span id="pose-count"></span>
+        </div>
+        <div class="pose-strip" id="pose-strip"></div>
+      </section>
+    </section>
   </main>
 
   <script>
-    let catalog = [];
-    let assets = {objects: {}};
+    const HF_BASE = 'https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main';
+    const state = {
+      catalog: [],
+      experiments: {},
+      assets: {objects: {}},
+      episodes: [],
+      currentKey: null,
+      currentCamera: null,
+      mode: 'video'
+    };
+
+    const els = {};
+    [
+      'summary-pills',
+      'search',
+      'hand-filter',
+      'status-filter',
+      'scene-filter',
+      'object-filter',
+      'episode-select',
+      'toggle-objects',
+      'toggle-poses',
+      'selected-title',
+      'selected-subtitle',
+      'main-video',
+      'pending-layer',
+      'pending-title',
+      'pending-copy',
+      'model-viewer',
+      'camera-strip',
+      'status-badge',
+      'episode-meta',
+      'asset-state',
+      'object-drawer',
+      'object-strip',
+      'object-count',
+      'pose-drawer',
+      'pose-strip',
+      'pose-count'
+    ].forEach(id => { els[id] = document.getElementById(id); });
 
     Promise.all([
       fetch('catalog.json').then(r => r.json()),
+      fetch('experiments.json').then(r => r.json()),
       fetch('assets3d.json').then(r => r.json()).catch(() => ({objects: {}}))
-    ]).then(([cat, assetManifest]) => {
-      catalog = cat;
-      assets = assetManifest || {objects: {}};
-      updateMetrics();
-      render();
+    ]).then(([catalog, experiments, assets]) => {
+      state.catalog = catalog || [];
+      state.experiments = experiments || {};
+      state.assets = assets || {objects: {}};
+      state.episodes = flattenEpisodes();
+      fillFilters();
+      renderSummary();
+      selectInitialEpisode();
+      bindEvents();
+      renderAll();
+    }).catch(err => {
+      els['selected-title'].textContent = 'Gallery data failed to load';
+      els['selected-subtitle'].textContent = err.message || String(err);
     });
 
-    function assetEntry(id) {
-      return (assets.objects || {})[id] || null;
-    }
-
-    function hasAsset(id) {
-      const item = assetEntry(id);
-      return Boolean(item && (item.url || item.glb || item.gltf));
-    }
-
-    function updateMetrics() {
-      const allegro = catalog.filter(o => o.hands.allegro).length;
-      const inspire = catalog.filter(o => o.hands.inspire).length;
-      const assetCount = catalog.filter(o => hasAsset(o.id)).length;
-      document.getElementById('metric-objects').textContent = catalog.length;
-      document.getElementById('metric-allegro').textContent = allegro;
-      document.getElementById('metric-inspire').textContent = inspire;
-      document.getElementById('metric-assets').textContent = assetCount;
-    }
-
-    function filteredItems() {
-      const q = document.getElementById('search').value.trim().toLowerCase();
-      const hand = document.getElementById('hand-filter').value;
-      const sort = document.getElementById('sort').value;
-      let items = catalog.filter(o => {
-        const text = `${o.id} ${o.name}`.toLowerCase();
-        const matchesQuery = !q || text.includes(q);
-        const matchesHand = hand === 'all' || Boolean(o.hands[hand]);
-        return matchesQuery && matchesHand;
+    function bindEvents() {
+      ['search', 'hand-filter', 'status-filter', 'scene-filter', 'object-filter'].forEach(id => {
+        els[id].addEventListener('input', syncAfterFilterChange);
+        els[id].addEventListener('change', syncAfterFilterChange);
       });
-      items = items.slice().sort((a, b) => {
-        if (sort === 'coverage') {
-          const ca = Number(a.hands.allegro || 0) + Number(a.hands.inspire || 0);
-          const cb = Number(b.hands.allegro || 0) + Number(b.hands.inspire || 0);
-          return cb - ca || a.name.localeCompare(b.name);
-        }
-        if (sort === 'assets') {
-          return Number(hasAsset(b.id)) - Number(hasAsset(a.id)) || a.name.localeCompare(b.name);
-        }
-        return a.name.localeCompare(b.name);
+
+      els['episode-select'].addEventListener('change', () => {
+        state.currentKey = els['episode-select'].value;
+        const ep = currentEpisode();
+        state.currentCamera = ep?.cameras?.[0] || null;
+        renderAll();
       });
-      return items;
+
+      els['toggle-objects'].addEventListener('change', renderDrawers);
+      els['toggle-poses'].addEventListener('change', renderDrawers);
+
+      document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.mode = btn.dataset.mode;
+          renderMainPanel();
+        });
+      });
     }
 
-    function updateStats(items) {
-      const allegro = items.filter(o => o.hands.allegro).length;
-      const inspire = items.filter(o => o.hands.inspire).length;
-      const assetCount = items.filter(o => hasAsset(o.id)).length;
-      const candidates = items.reduce((n, o) => n + Number(o.hands.allegro || 0) + Number(o.hands.inspire || 0), 0);
-      document.getElementById('stats').innerHTML = [
-        `<span class="chip accent">${items.length} objects</span>`,
-        `<span class="chip">${candidates.toLocaleString()} grasp candidates</span>`,
-        `<span class="chip">Allegro ${allegro}</span>`,
-        `<span class="chip">Inspire ${inspire}</span>`,
-        `<span class="chip ${assetCount ? 'ok' : 'warn'}">3D ${assetCount}</span>`
+    function flattenEpisodes() {
+      const byId = new Map(state.catalog.map(obj => [obj.id, obj]));
+      const episodes = [];
+      Object.entries(state.experiments).forEach(([hand, objects]) => {
+        Object.entries(objects || {}).forEach(([objId, grasps]) => {
+          const obj = byId.get(objId) || {id: objId, name: titleize(objId), hands: {}, has_thumbnail: false};
+          Object.entries(grasps || {}).forEach(([rank, exp]) => {
+            const sceneInfo = Array.isArray(exp.scene_info) ? exp.scene_info : [];
+            const cameras = Array.isArray(exp.cameras) ? exp.cameras : [];
+            episodes.push({
+              key: [hand, objId, rank].join('|'),
+              hand,
+              objId,
+              objName: obj.name || titleize(objId),
+              hasThumbnail: Boolean(obj.has_thumbnail),
+              rank,
+              rankLabel: `Grasp #${Number(rank) + 1}`,
+              rankStr: padRank(rank),
+              status: exp.status || 'unknown',
+              scene: sceneInfo[0] || 'unknown',
+              sceneInfo,
+              dirIdx: exp.dir_idx || '',
+              nTrials: exp.n_trials,
+              nSuccess: exp.n_success,
+              cameras,
+              merged: exp.merged !== false,
+              raw: exp
+            });
+          });
+        });
+      });
+      return episodes.sort((a, b) =>
+        a.objName.localeCompare(b.objName) ||
+        a.hand.localeCompare(b.hand) ||
+        Number(a.rank) - Number(b.rank)
+      );
+    }
+
+    function fillFilters() {
+      const scenes = [...new Set(state.episodes.map(ep => ep.scene).filter(Boolean))].sort();
+      els['scene-filter'].innerHTML = '<option value="all">All scenes</option>' +
+        scenes.map(scene => `<option value="${escapeHtml(scene)}">${escapeHtml(titleize(scene))}</option>`).join('');
+
+      const usedObjects = new Set(state.episodes.map(ep => ep.objId));
+      const objectOptions = state.catalog
+        .filter(obj => usedObjects.has(obj.id))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(obj => `<option value="${escapeHtml(obj.id)}">${escapeHtml(obj.name)}</option>`);
+      els['object-filter'].innerHTML = '<option value="all">All objects</option>' + objectOptions.join('');
+    }
+
+    function renderSummary() {
+      const successes = state.episodes.filter(ep => ep.status === 'success').length;
+      const fails = state.episodes.filter(ep => ep.status === 'fail').length;
+      const objects = new Set(state.episodes.map(ep => ep.objId)).size;
+      const cameraCounts = new Set(state.episodes.map(ep => ep.cameras.length));
+      els['summary-pills'].innerHTML = [
+        `<span class="chip accent">${state.episodes.length.toLocaleString()} episodes</span>`,
+        `<span class="chip">${objects} objects</span>`,
+        `<span class="chip ok">${successes} success</span>`,
+        `<span class="chip warn">${fails} fail</span>`,
+        `<span class="chip">${[...cameraCounts].sort((a, b) => a - b).join('/')} views</span>`
       ].join('');
     }
 
-    function render() {
-      const items = filteredItems();
-      updateStats(items);
-      const grid = document.getElementById('grid');
-      grid.innerHTML = items.map(obj => {
-        const thumbSrc = obj.has_thumbnail
-          ? `objects/${obj.id}/thumb.png`
-          : `https://via.placeholder.com/320/f5f0e9/8a8178?text=${encodeURIComponent(obj.name)}`;
-        const handChips = Object.entries(obj.hands).map(([hand, count]) =>
-          `<span class="chip">${hand} ${count}</span>`).join('');
-        const assetChip = hasAsset(obj.id)
-          ? '<span class="chip ok">3D ready</span>'
-          : '<span class="chip warn">3D pending</span>';
-        return `
-          <article class="grid-item" onclick="location.href='object.html?obj=${obj.id}'">
-            <div class="thumb-slot"><img src="${thumbSrc}" alt="${obj.name}" loading="lazy"></div>
-            <div class="label" title="${obj.name}">${obj.name}</div>
-            <div class="hands-info">${handChips}${assetChip}</div>
-          </article>`;
-      }).join('') || '<div class="empty-state">No matching objects</div>';
+    function selectInitialEpisode() {
+      const firstSuccess = state.episodes.find(ep => ep.status === 'success');
+      const first = firstSuccess || state.episodes[0] || null;
+      if (first) {
+        state.currentKey = first.key;
+        state.currentCamera = first.cameras[0] || null;
+      }
     }
 
-    ['search', 'hand-filter', 'sort'].forEach(id => {
-      document.getElementById(id).addEventListener('input', render);
-      document.getElementById(id).addEventListener('change', render);
-    });
+    function syncAfterFilterChange() {
+      const visible = filteredEpisodes();
+      if (!visible.some(ep => ep.key === state.currentKey)) {
+        state.currentKey = visible[0]?.key || null;
+        state.currentCamera = visible[0]?.cameras?.[0] || null;
+      }
+      renderAll();
+    }
+
+    function filters() {
+      return {
+        q: els['search'].value.trim().toLowerCase(),
+        hand: els['hand-filter'].value,
+        status: els['status-filter'].value,
+        scene: els['scene-filter'].value,
+        object: els['object-filter'].value
+      };
+    }
+
+    function filteredEpisodes() {
+      const f = filters();
+      return state.episodes.filter(ep => {
+        const haystack = [
+          ep.objId,
+          ep.objName,
+          ep.hand,
+          ep.rankLabel,
+          ep.rank,
+          ep.scene,
+          ep.sceneInfo.join(' '),
+          ep.dirIdx,
+          ep.status
+        ].join(' ').toLowerCase();
+        return (!f.q || haystack.includes(f.q)) &&
+          (f.hand === 'all' || ep.hand === f.hand) &&
+          (f.status === 'all' || ep.status === f.status) &&
+          (f.scene === 'all' || ep.scene === f.scene) &&
+          (f.object === 'all' || ep.objId === f.object);
+      });
+    }
+
+    function renderAll() {
+      renderEpisodeSelect();
+      renderMainPanel();
+      renderSidePanels();
+      renderDrawers();
+    }
+
+    function renderEpisodeSelect() {
+      const visible = filteredEpisodes();
+      if (!visible.length) {
+        els['episode-select'].innerHTML = '<option value="">No matching episodes</option>';
+        state.currentKey = null;
+        return;
+      }
+      if (!visible.some(ep => ep.key === state.currentKey)) {
+        state.currentKey = visible[0].key;
+        state.currentCamera = visible[0].cameras[0] || null;
+      }
+      els['episode-select'].innerHTML = visible.map(ep => {
+        const label = `${ep.objName} - ${titleize(ep.hand)} - ${ep.rankLabel} - ${titleize(ep.scene)} - ${ep.status}`;
+        return `<option value="${escapeHtml(ep.key)}"${ep.key === state.currentKey ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+      }).join('');
+    }
+
+    function currentEpisode() {
+      return state.episodes.find(ep => ep.key === state.currentKey) || null;
+    }
+
+    function renderMainPanel() {
+      const ep = currentEpisode();
+      document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === state.mode);
+      });
+
+      if (!ep) {
+        els['selected-title'].textContent = 'No matching episode';
+        els['selected-subtitle'].textContent = '';
+        clearMedia();
+        return;
+      }
+
+      if (!state.currentCamera || !ep.cameras.includes(state.currentCamera)) {
+        state.currentCamera = ep.cameras[0] || null;
+      }
+
+      els['selected-title'].textContent = `${ep.objName} - ${titleize(ep.hand)} - ${ep.rankLabel}`;
+      els['selected-subtitle'].textContent = `${titleize(ep.scene)} scene ${ep.sceneInfo.slice(1).join(' / ')} | view ${state.currentCamera || 'none'} | ${ep.status}`;
+
+      renderCameraStrip(ep);
+      if (state.mode === 'video') {
+        showVideo(videoUrl(ep, state.currentCamera));
+      } else if (state.mode === 'overlay') {
+        const overlay = overlayUrl(ep, state.currentCamera);
+        if (overlay) {
+          showVideo(overlay);
+        } else {
+          showPending('Overlay video pending', 'Object-tracking overlays can populate this layer after the tracking outputs are exported to the gallery manifest.');
+        }
+      } else {
+        const model = modelUrl(ep);
+        if (model) {
+          showModel(model);
+        } else {
+          showPending('Interactive 3D pending', 'The viewer is wired for reconstruction assets and trajectory playback, but no GLB or GLTF asset is registered for this episode yet.');
+        }
+      }
+    }
+
+    function renderCameraStrip(ep) {
+      const cameras = ep.cameras || [];
+      els['camera-strip'].innerHTML = cameras.map((cam, idx) =>
+        `<button class="cam-btn ${cam === state.currentCamera ? 'active' : ''}" data-camera="${escapeHtml(cam)}">View ${idx + 1}<br>${escapeHtml(cam)}</button>`
+      ).join('') || '<div class="empty-inline">No camera streams listed for this episode.</div>';
+      els['camera-strip'].querySelectorAll('.cam-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.currentCamera = btn.dataset.camera;
+          renderMainPanel();
+          renderSidePanels();
+        });
+      });
+    }
+
+    function showVideo(src) {
+      els['pending-layer'].classList.remove('visible');
+      els['model-viewer'].style.display = 'none';
+      els['main-video'].style.display = 'block';
+      if (els['main-video'].src !== src) {
+        els['main-video'].src = src;
+        els['main-video'].load();
+      }
+    }
+
+    function showModel(src) {
+      els['main-video'].pause();
+      els['main-video'].removeAttribute('src');
+      els['main-video'].load();
+      els['main-video'].style.display = 'none';
+      els['pending-layer'].classList.remove('visible');
+      els['model-viewer'].style.display = 'block';
+      els['model-viewer'].src = src;
+    }
+
+    function showPending(title, copy) {
+      els['main-video'].pause();
+      els['main-video'].removeAttribute('src');
+      els['main-video'].load();
+      els['main-video'].style.display = 'none';
+      els['model-viewer'].removeAttribute('src');
+      els['model-viewer'].style.display = 'none';
+      els['pending-title'].textContent = title;
+      els['pending-copy'].textContent = copy;
+      els['pending-layer'].classList.add('visible');
+    }
+
+    function clearMedia() {
+      els['camera-strip'].innerHTML = '';
+      showPending('No episode selected', 'Adjust filters to select an episode.');
+    }
+
+    function renderSidePanels() {
+      const ep = currentEpisode();
+      if (!ep) {
+        els['status-badge'].textContent = '-';
+        els['episode-meta'].innerHTML = '';
+        els['asset-state'].innerHTML = '';
+        return;
+      }
+      els['status-badge'].className = `badge ${ep.status === 'success' ? 'badge-success' : ep.status === 'fail' ? 'badge-fail' : ''}`;
+      els['status-badge'].textContent = titleize(ep.status);
+      els['episode-meta'].innerHTML = [
+        ['Object', ep.objName],
+        ['Hand', titleize(ep.hand)],
+        ['Grasp', ep.rankLabel],
+        ['Scene', ep.sceneInfo.join(' / ') || titleize(ep.scene)],
+        ['Episode dir', ep.dirIdx || '-'],
+        ['Views', `${ep.cameras.length} camera streams`],
+        ['Current view', state.currentCamera || '-'],
+        ['Success label', ep.status === 'success' ? `${ep.nSuccess ?? 1}/${ep.nTrials ?? 1}` : 'failed']
+      ].map(([key, value]) =>
+        `<div class="meta-row"><div class="key">${escapeHtml(key)}</div><div class="value">${escapeHtml(String(value))}</div></div>`
+      ).join('');
+
+      const hasObjectModel = Boolean(modelUrl(ep));
+      const hasOverlay = Boolean(overlayUrl(ep, state.currentCamera));
+      els['asset-state'].innerHTML = [
+        assetLine('Captured video', ep.cameras.length ? 'ready' : 'missing', ep.cameras.length ? 'ok' : 'warn'),
+        assetLine('Pose turntable', 'ready', 'ok'),
+        assetLine('Object overlay', hasOverlay ? 'ready' : 'pending', hasOverlay ? 'ok' : 'warn'),
+        assetLine('Interactive 3D', hasObjectModel ? 'ready' : 'pending', hasObjectModel ? 'ok' : 'warn'),
+        assetLine('Robot trajectory', 'pending tracking export', 'warn')
+      ].join('');
+    }
+
+    function assetLine(label, value, tone) {
+      return `<div class="asset-line"><span>${escapeHtml(label)}</span><span class="chip ${tone}">${escapeHtml(value)}</span></div>`;
+    }
+
+    function renderDrawers() {
+      renderObjectDrawer();
+      renderPoseDrawer();
+    }
+
+    function renderObjectDrawer() {
+      const open = els['toggle-objects'].checked;
+      els['object-drawer'].classList.toggle('open', open);
+      if (!open) return;
+
+      const f = filters();
+      const episodes = state.episodes.filter(ep =>
+        (f.hand === 'all' || ep.hand === f.hand) &&
+        (f.status === 'all' || ep.status === f.status) &&
+        (f.scene === 'all' || ep.scene === f.scene) &&
+        (!f.q || `${ep.objId} ${ep.objName}`.toLowerCase().includes(f.q))
+      );
+      const byObject = new Map();
+      episodes.forEach(ep => {
+        const item = byObject.get(ep.objId) || {id: ep.objId, name: ep.objName, episodes: 0, success: 0, fail: 0, first: ep, hasThumbnail: ep.hasThumbnail};
+        item.episodes += 1;
+        if (ep.status === 'success') item.success += 1;
+        if (ep.status === 'fail') item.fail += 1;
+        byObject.set(ep.objId, item);
+      });
+      const items = [...byObject.values()].sort((a, b) => a.name.localeCompare(b.name));
+      els['object-count'].textContent = `${items.length} objects`;
+      els['object-strip'].innerHTML = items.map(item => {
+        const active = currentEpisode()?.objId === item.id;
+        const thumb = item.hasThumbnail ? `objects/${item.id}/thumb.png` : '';
+        return `<button class="object-tile ${active ? 'active' : ''}" data-object="${escapeHtml(item.id)}">
+          ${thumb ? `<img src="${thumb}" alt="${escapeHtml(item.name)}" loading="lazy">` : '<div class="empty-inline">No thumbnail</div>'}
+          <div class="tile-body">
+            <div class="tile-title">${escapeHtml(item.name)}</div>
+            <div class="tile-sub">${item.episodes} episodes</div>
+            <div class="status-line">
+              <span class="chip ok">${item.success} success</span>
+              <span class="chip warn">${item.fail} fail</span>
+            </div>
+          </div>
+        </button>`;
+      }).join('') || '<div class="empty-inline">No matching objects.</div>';
+      els['object-strip'].querySelectorAll('.object-tile').forEach(btn => {
+        btn.addEventListener('click', () => {
+          els['object-filter'].value = btn.dataset.object;
+          syncAfterFilterChange();
+        });
+      });
+    }
+
+    function renderPoseDrawer() {
+      const open = els['toggle-poses'].checked;
+      els['pose-drawer'].classList.toggle('open', open);
+      if (!open) return;
+
+      const ep = currentEpisode();
+      if (!ep) {
+        els['pose-count'].textContent = '0 poses';
+        els['pose-strip'].innerHTML = '<div class="empty-inline">No episode selected.</div>';
+        return;
+      }
+      const f = filters();
+      const poseItems = state.episodes.filter(item =>
+        item.objId === ep.objId &&
+        (f.hand === 'all' || item.hand === f.hand) &&
+        (f.status === 'all' || item.status === f.status) &&
+        (f.scene === 'all' || item.scene === f.scene)
+      ).slice(0, 48);
+      els['pose-count'].textContent = `${poseItems.length} pose candidates`;
+      els['pose-strip'].innerHTML = poseItems.map(item => {
+        const active = item.key === state.currentKey;
+        return `<button class="pose-tile ${active ? 'active' : ''}" data-key="${escapeHtml(item.key)}">
+          <video src="${turntableUrl(item)}" muted loop playsinline preload="metadata"></video>
+          <div class="tile-body">
+            <div class="tile-title">${escapeHtml(item.rankLabel)}</div>
+            <div class="tile-sub">${escapeHtml(titleize(item.hand))} | ${escapeHtml(titleize(item.scene))}</div>
+            <div class="status-line">
+              <span class="chip ${item.status === 'success' ? 'ok' : 'warn'}">${escapeHtml(item.status)}</span>
+              <span class="chip">${item.cameras.length} views</span>
+            </div>
+          </div>
+        </button>`;
+      }).join('') || '<div class="empty-inline">No matching pose candidates.</div>';
+      els['pose-strip'].querySelectorAll('.pose-tile').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.currentKey = btn.dataset.key;
+          const next = currentEpisode();
+          state.currentCamera = next?.cameras?.[0] || null;
+          renderAll();
+        });
+        const vid = btn.querySelector('video');
+        btn.addEventListener('mouseenter', () => vid.play().catch(() => {}));
+        btn.addEventListener('mouseleave', () => {
+          vid.pause();
+          vid.currentTime = 0;
+        });
+      });
+    }
+
+    function videoUrl(ep, camera) {
+      if (!ep || !camera) return '';
+      return `${HF_BASE}/experiments/${ep.hand}/${ep.objId}/${ep.rankStr}/${camera}.mp4`;
+    }
+
+    function turntableUrl(ep) {
+      return `${HF_BASE}/turntable/${ep.hand}/${ep.objId}/${ep.rankStr}/turntable.mp4`;
+    }
+
+    function overlayUrl(ep, camera) {
+      const objects = state.assets.objects || {};
+      const entry = objects[ep.objId] || {};
+      const overlays = entry.overlays || entry.overlay_videos || {};
+      const byEpisode = overlays[ep.key] || overlays[ep.rankStr] || overlays[ep.rank] || null;
+      if (byEpisode && camera && byEpisode[camera]) return resolveAssetUrl(byEpisode[camera]);
+      if (entry.overlay_url) return resolveAssetUrl(entry.overlay_url);
+      return '';
+    }
+
+    function modelUrl(ep) {
+      const objects = state.assets.objects || {};
+      const entry = objects[ep.objId] || {};
+      const recon = entry.reconstructions || entry.episodes || {};
+      const episodeAsset = recon[ep.key] || recon[ep.rankStr] || recon[ep.rank] || null;
+      const candidate = episodeAsset?.url || episodeAsset?.glb || episodeAsset?.gltf ||
+        entry.url || entry.glb || entry.gltf || '';
+      return candidate ? resolveAssetUrl(candidate) : '';
+    }
+
+    function resolveAssetUrl(url) {
+      if (!url) return '';
+      if (/^https?:\/\//.test(url)) return url;
+      const base = state.assets.base_url || '';
+      return `${base}${url}`;
+    }
+
+    function padRank(rank) {
+      return String(rank).padStart(3, '0');
+    }
+
+    function titleize(value) {
+      return String(value || '')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
   </script>
 </body>
 </html>

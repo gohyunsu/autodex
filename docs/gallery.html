@@ -35,14 +35,6 @@
       letter-spacing: 0;
     }
 
-    .gallery-copy {
-      max-width: 860px;
-      margin-top: 10px;
-      color: var(--text-muted);
-      font-size: 1.02em;
-      line-height: 1.5;
-    }
-
     .summary-pills {
       display: flex;
       flex-wrap: wrap;
@@ -313,7 +305,7 @@
     .object-tile,
     .pose-tile,
     .view-tile {
-      flex: 0 0 118px;
+      flex: 0 0 178px;
       overflow: hidden;
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -334,29 +326,29 @@
     }
 
     .pose-tile {
-      flex-basis: 142px;
+      flex-basis: 210px;
     }
 
     .object-tile img,
     .pose-tile video,
     .view-tile video {
       width: 100%;
-      height: 62px;
+      height: 108px;
       display: block;
       background: var(--surface-2);
       object-fit: cover;
     }
 
     .object-tile img {
-      height: 62px;
+      height: 108px;
     }
 
     .tile-body {
-      padding: 5px 6px 6px;
+      padding: 7px 8px 8px;
     }
 
     .tile-title {
-      font-size: .72em;
+      font-size: .82em;
       font-weight: 800;
       white-space: nowrap;
       overflow: hidden;
@@ -460,7 +452,6 @@
       <div>
         <div class="gallery-kicker">Dataset Gallery</div>
         <h1 class="gallery-title">Episode Viewer</h1>
-        <p class="gallery-copy">Select a grasp episode, camera view, and content layer. Compact object, pose, and view selectors sit directly above the main panel for focused browsing.</p>
       </div>
       <div class="summary-pills" id="summary-pills"></div>
     </header>

@@ -5,52 +5,235 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AutoDex</title>
   <link rel="stylesheet" href="css/style.css">
+  <style>
+    .landing-page {
+      padding: 0;
+      max-width: none;
+    }
+
+    .paper-hero {
+      position: relative;
+      min-height: calc(100vh - 126px);
+      overflow: hidden;
+      display: flex;
+      align-items: flex-end;
+      background: #171513;
+    }
+
+    .paper-hero video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: .82;
+    }
+
+    .paper-hero::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: rgba(20, 16, 12, .42);
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 1;
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      padding: clamp(42px, 7vw, 86px) 32px;
+      color: #fff;
+    }
+
+    .hero-kicker {
+      color: rgba(255, 255, 255, .78);
+      font-size: .8em;
+      font-weight: 850;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .hero-copy h1 {
+      max-width: 900px;
+      margin-top: 10px;
+      font-size: clamp(3.4rem, 8vw, 7rem);
+      line-height: .92;
+      letter-spacing: 0;
+    }
+
+    .hero-copy p {
+      max-width: 760px;
+      margin-top: 18px;
+      color: rgba(255, 255, 255, .82);
+      font-size: clamp(1.02rem, 1.8vw, 1.35rem);
+      line-height: 1.5;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .hero-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 10px 16px;
+      border: 1px solid rgba(255, 255, 255, .34);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .12);
+      color: #fff;
+      font-weight: 850;
+      backdrop-filter: blur(10px);
+    }
+
+    .hero-btn.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+
+    .hero-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, .2);
+    }
+
+    .hero-btn.primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .landing-section {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 42px 32px 68px;
+    }
+
+    .landing-section h2 {
+      font-size: clamp(1.7rem, 3vw, 2.7rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .landing-section p {
+      margin-top: 10px;
+      color: var(--text-muted);
+      max-width: 780px;
+    }
+
+    .landing-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    .landing-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .flow-item {
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .flow-item h3 {
+      font-size: 1em;
+    }
+
+    .flow-item p {
+      margin-top: 6px;
+      font-size: .92em;
+    }
+
+    @media (max-width: 760px) {
+      .hero-copy {
+        padding: 38px 18px;
+      }
+
+      .landing-section {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .landing-metrics,
+      .landing-flow {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
 <body>
   <nav class="nav">
     <a class="nav-logo" href="index.html">AutoDex</a>
     <div class="nav-links">
-      <a href="index.html" class="active">Overview</a>
+      <a href="index.html" class="active">Home</a>
       <a href="gallery.html" class="cta">Gallery</a>
       <a href="experiments.html">Experiments</a>
     </div>
   </nav>
 
-  <main class="landing">
-    <h1>AutoDex</h1>
-    <p>Dexterous robot grasp candidates, object assets, and real execution videos across everyday objects.</p>
-
-    <section class="metric-grid" style="width:min(980px,100%);">
-      <div class="metric-card">
-        <div class="metric-label">Objects</div>
-        <div class="metric-value" id="obj-count">-</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Allegro Candidates</div>
-        <div class="metric-value" id="allegro-count">-</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Inspire Candidates</div>
-        <div class="metric-value" id="inspire-count">-</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Experiments</div>
-        <div class="metric-value" id="exp-count">-</div>
+  <main class="landing-page">
+    <section class="paper-hero">
+      <video autoplay muted loop playsinline preload="metadata" poster="objects/attached_container/thumb.png">
+        <source src="https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main/experiments/inspire/attached_container/000/24080331.mp4" type="video/mp4">
+      </video>
+      <div class="hero-copy">
+        <div class="hero-kicker">Dexterous manipulation dataset</div>
+        <h1>AutoDex</h1>
+        <p>Multi-view robot grasp executions over everyday objects, organized by object, pose, view, scene, and success label for paper-scale browsing and analysis.</p>
+        <div class="hero-actions">
+          <a class="hero-btn primary" href="gallery.html">Open Gallery</a>
+          <a class="hero-btn" href="experiments.html">Browse Experiments</a>
+        </div>
       </div>
     </section>
 
-    <div class="landing-cards">
-      <a class="landing-card" href="gallery.html">
-        <div class="card-count">100</div>
-        <h2>Object Gallery</h2>
-        <p>Browse objects, hand coverage, grasp turntables, and 3D asset availability.</p>
-      </a>
-      <a class="landing-card" href="experiments.html">
-        <div class="card-count" id="exp-card-count">-</div>
-        <h2>Execution Videos</h2>
-        <p>Inspect real robot trials with linked turntable candidates and camera views.</p>
-      </a>
-    </div>
+    <section class="landing-section">
+      <h2>Dataset Scope</h2>
+      <p>AutoDex pairs grasp candidates with synchronized real-world execution videos. The gallery page is the main interactive panel for selecting an episode, switching views, and loading future 3D reconstructions.</p>
+
+      <div class="landing-metrics">
+        <div class="metric-card">
+          <div class="metric-label">Objects</div>
+          <div class="metric-value" id="obj-count">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Episodes</div>
+          <div class="metric-value" id="exp-count">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Success</div>
+          <div class="metric-value" id="success-count">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Views</div>
+          <div class="metric-value" id="view-count">-</div>
+        </div>
+      </div>
+
+      <div class="landing-flow">
+        <div class="flow-item">
+          <h3>Episode Gallery</h3>
+          <p>Object, pose, and view selectors lead into the main video panel.</p>
+        </div>
+        <div class="flow-item">
+          <h3>Robot Execution</h3>
+          <p>Each episode records a hand, grasp candidate, scene, result, and camera set.</p>
+        </div>
+        <div class="flow-item">
+          <h3>Interactive 3D</h3>
+          <p>The gallery is ready to load GLB or GLTF assets once reconstruction exports are registered.</p>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -58,15 +241,22 @@
       fetch('catalog.json').then(r => r.json()),
       fetch('experiments.json').then(r => r.json()).catch(() => ({}))
     ]).then(([catalog, experiments]) => {
-      const allegro = catalog.reduce((n, o) => n + Number(o.hands.allegro || 0), 0);
-      const inspire = catalog.reduce((n, o) => n + Number(o.hands.inspire || 0), 0);
-      const totalExp = Object.values(experiments).reduce((sum, hand) =>
-        sum + Object.values(hand || {}).reduce((s2, obj) => s2 + Object.keys(obj || {}).length, 0), 0);
+      let totalExp = 0;
+      let success = 0;
+      const views = new Set();
+      Object.values(experiments).forEach(hand => {
+        Object.values(hand || {}).forEach(obj => {
+          Object.values(obj || {}).forEach(exp => {
+            totalExp += 1;
+            if (exp.status === 'success') success += 1;
+            (exp.cameras || []).forEach(cam => views.add(cam));
+          });
+        });
+      });
       document.getElementById('obj-count').textContent = catalog.length;
-      document.getElementById('allegro-count').textContent = allegro.toLocaleString();
-      document.getElementById('inspire-count').textContent = inspire.toLocaleString();
       document.getElementById('exp-count').textContent = totalExp.toLocaleString();
-      document.getElementById('exp-card-count').textContent = totalExp.toLocaleString();
+      document.getElementById('success-count').textContent = success.toLocaleString();
+      document.getElementById('view-count').textContent = views.size.toLocaleString();
     });
   </script>
 </body>

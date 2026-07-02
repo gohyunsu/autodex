@@ -339,6 +339,7 @@
       display: block;
       background: var(--surface-2);
       object-fit: cover;
+      pointer-events: none;
     }
 
     .object-tile img {
@@ -347,6 +348,7 @@
 
     .tile-body {
       padding: 7px 8px 8px;
+      pointer-events: none;
     }
 
     .tile-title {
@@ -661,11 +663,14 @@
           renderSelectorRows();
         });
         row.addEventListener('focusout', event => {
-          if (!row.contains(event.relatedTarget)) {
+          requestAnimationFrame(() => {
+            if (row.matches(':hover') || row.contains(document.activeElement)) return;
             stopRailAutoScroll();
-            state.openSelector = null;
-            renderSelectorRows();
-          }
+            if (state.openSelector === name) {
+              state.openSelector = null;
+              renderSelectorRows();
+            }
+          });
         });
       });
 
@@ -674,6 +679,30 @@
           state.mode = btn.dataset.mode;
           renderMainPanel();
         });
+      });
+    }
+
+    function bindTileActivation(tile, onActivate) {
+      let pointerActivated = false;
+
+      tile.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        pointerActivated = true;
+        event.preventDefault();
+        event.stopPropagation();
+        stopRailAutoScroll();
+        onActivate();
+      });
+
+      tile.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pointerActivated) {
+          pointerActivated = false;
+          return;
+        }
+        stopRailAutoScroll();
+        onActivate();
       });
     }
 
@@ -955,7 +984,7 @@
         </button>`
       ).join('');
       els['view-strip'].querySelectorAll('.view-tile').forEach(btn => {
-        btn.addEventListener('click', () => {
+        bindTileActivation(btn, () => {
           state.currentCamera = btn.dataset.camera;
           renderMainPanel();
           renderSelectorRows();
@@ -1074,7 +1103,7 @@
         </button>`;
       }).join('') || '<div class="empty-inline">No matching objects.</div>';
       els['object-strip'].querySelectorAll('.object-tile').forEach(btn => {
-        btn.addEventListener('click', () => {
+        bindTileActivation(btn, () => {
           els['object-filter'].value = btn.dataset.object;
           syncAfterFilterChange();
         });
@@ -1117,7 +1146,7 @@
         </button>`;
       }).join('') || '<div class="empty-inline">No matching pose candidates.</div>';
       els['pose-strip'].querySelectorAll('.pose-tile').forEach(btn => {
-        btn.addEventListener('click', () => {
+        bindTileActivation(btn, () => {
           state.currentKey = btn.dataset.key;
           const next = currentEpisode();
           state.currentCamera = next?.cameras?.[0] || null;

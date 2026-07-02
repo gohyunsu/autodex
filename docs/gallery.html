@@ -295,7 +295,9 @@
       overflow-y: hidden;
       overscroll-behavior-x: contain;
       padding: 8px 10px 10px 90px;
+      scroll-behavior: auto;
       scrollbar-width: thin;
+      touch-action: pan-x;
     }
 
     .selector-row.open .selector-rail {
@@ -569,6 +571,9 @@
       currentKey: null,
       currentCamera: null,
       openSelector: null,
+      autoScrollRail: null,
+      autoScrollFrame: null,
+      autoScrollVelocity: 0,
       mode: 'video'
     };
 
@@ -640,11 +645,14 @@
 
       ['object', 'pose', 'view'].forEach(name => {
         const row = els[`${name}-selector`];
+        const rail = els[`${name}-strip`];
+        attachRailAutoScroll(rail);
         row.addEventListener('pointerenter', () => {
           state.openSelector = name;
           renderSelectorRows();
         });
         row.addEventListener('pointerleave', () => {
+          stopRailAutoScroll();
           state.openSelector = null;
           renderSelectorRows();
         });
@@ -654,6 +662,7 @@
         });
         row.addEventListener('focusout', event => {
           if (!row.contains(event.relatedTarget)) {
+            stopRailAutoScroll();
             state.openSelector = null;
             renderSelectorRows();
           }
@@ -666,6 +675,79 @@
           renderMainPanel();
         });
       });
+    }
+
+    function attachRailAutoScroll(rail) {
+      rail.addEventListener('pointermove', event => updateRailAutoScroll(rail, event));
+      rail.addEventListener('pointerleave', stopRailAutoScroll);
+      rail.addEventListener('pointercancel', stopRailAutoScroll);
+      rail.addEventListener('wheel', stopRailAutoScroll, {passive: true});
+    }
+
+    function updateRailAutoScroll(rail, event) {
+      if (!rail || rail.scrollWidth <= rail.clientWidth) {
+        stopRailAutoScroll();
+        return;
+      }
+
+      const rect = rail.getBoundingClientRect();
+      const edgeWidth = Math.min(120, Math.max(56, rect.width * 0.18));
+      const x = event.clientX - rect.left;
+      let velocity = 0;
+
+      if (x < edgeWidth) {
+        velocity = -railAutoScrollVelocity(edgeWidth - x, edgeWidth);
+      } else if (x > rect.width - edgeWidth) {
+        velocity = railAutoScrollVelocity(x - (rect.width - edgeWidth), edgeWidth);
+      }
+
+      if (!velocity) {
+        stopRailAutoScroll();
+        return;
+      }
+
+      startRailAutoScroll(rail, velocity);
+    }
+
+    function railAutoScrollVelocity(distanceIntoEdge, edgeWidth) {
+      const ratio = Math.max(0, Math.min(1, distanceIntoEdge / edgeWidth));
+      return 5 + Math.round(ratio * 18);
+    }
+
+    function startRailAutoScroll(rail, velocity) {
+      state.autoScrollRail = rail;
+      state.autoScrollVelocity = velocity;
+      if (state.autoScrollFrame) return;
+
+      const step = () => {
+        const activeRail = state.autoScrollRail;
+        const activeVelocity = state.autoScrollVelocity;
+        if (!activeRail || !activeVelocity) {
+          state.autoScrollFrame = null;
+          return;
+        }
+
+        activeRail.scrollLeft += activeVelocity;
+        const maxScroll = Math.max(0, activeRail.scrollWidth - activeRail.clientWidth);
+        if ((activeRail.scrollLeft <= 0 && activeVelocity < 0) ||
+            (activeRail.scrollLeft >= maxScroll && activeVelocity > 0)) {
+          stopRailAutoScroll();
+          return;
+        }
+
+        state.autoScrollFrame = requestAnimationFrame(step);
+      };
+
+      state.autoScrollFrame = requestAnimationFrame(step);
+    }
+
+    function stopRailAutoScroll() {
+      state.autoScrollRail = null;
+      state.autoScrollVelocity = 0;
+      if (state.autoScrollFrame) {
+        cancelAnimationFrame(state.autoScrollFrame);
+        state.autoScrollFrame = null;
+      }
     }
 
     function applyInitialViewParams() {

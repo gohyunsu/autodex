@@ -60,7 +60,7 @@
     .control-deck {
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: minmax(160px, 1.15fr) repeat(5, minmax(118px, .8fr));
+      grid-template-columns: minmax(160px, 1.05fr) minmax(170px, .9fr) minmax(170px, .9fr) minmax(220px, 1.15fr) minmax(220px, 1.2fr);
       gap: 8px;
       padding: 10px;
       align-items: end;
@@ -76,7 +76,7 @@
       text-transform: uppercase;
     }
 
-    .field input,
+    .field input[type="search"],
     .field select {
       min-height: 38px;
       width: 100%;
@@ -88,9 +88,62 @@
       outline: none;
     }
 
-    .field input:focus,
+    .field input[type="search"]:focus,
     .field select:focus {
       border-color: var(--accent);
+    }
+
+    .check-group {
+      display: flex;
+      min-height: 38px;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 5px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .check-group:focus-within {
+      border-color: var(--accent);
+    }
+
+    .check-chip {
+      display: inline-flex;
+      min-height: 26px;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-2);
+      color: var(--text-muted);
+      font-size: .76em;
+      font-weight: 800;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .check-chip:has(input:checked) {
+      border-color: rgba(226, 96, 59, .48);
+      background: rgba(226, 96, 59, .12);
+      color: var(--text);
+    }
+
+    .check-chip input {
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
+    .empty-check {
+      padding: 0 5px;
+      color: var(--text-muted);
+      font-size: .76em;
+      font-weight: 800;
     }
 
     .viewer-main {
@@ -466,32 +519,16 @@
         <input id="search" type="search" placeholder="object, grasp, scene">
       </div>
       <div class="field">
-        <label for="hand-filter">Hand</label>
-        <select id="hand-filter">
-          <option value="all">All hands</option>
-          <option value="allegro">Allegro</option>
-          <option value="inspire">Inspire</option>
-        </select>
+        <label id="hand-filter-label">Hand</label>
+        <div class="check-group" id="hand-filter" role="group" aria-labelledby="hand-filter-label"></div>
       </div>
       <div class="field">
-        <label for="status-filter">Outcome</label>
-        <select id="status-filter">
-          <option value="all">All outcomes</option>
-          <option value="success">Success only</option>
-          <option value="fail">Fail only</option>
-        </select>
+        <label id="status-filter-label">Outcome</label>
+        <div class="check-group" id="status-filter" role="group" aria-labelledby="status-filter-label"></div>
       </div>
       <div class="field">
-        <label for="scene-filter">Scene</label>
-        <select id="scene-filter">
-          <option value="all">All scenes</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="object-filter">Object</label>
-        <select id="object-filter">
-          <option value="all">All objects</option>
-        </select>
+        <label id="scene-filter-label">Scene</label>
+        <div class="check-group" id="scene-filter" role="group" aria-labelledby="scene-filter-label"></div>
       </div>
       <div class="field">
         <label for="episode-select">Episode / grasp</label>
@@ -586,7 +623,6 @@
       'hand-filter',
       'status-filter',
       'scene-filter',
-      'object-filter',
       'episode-select',
       'object-selector',
       'pose-selector',
@@ -633,8 +669,8 @@
     });
 
     function bindEvents() {
-      ['search', 'hand-filter', 'status-filter', 'scene-filter', 'object-filter'].forEach(id => {
-        els[id].addEventListener('input', syncAfterFilterChange);
+      els['search'].addEventListener('input', syncAfterFilterChange);
+      ['hand-filter', 'status-filter', 'scene-filter'].forEach(id => {
         els[id].addEventListener('change', syncAfterFilterChange);
       });
 
@@ -826,16 +862,29 @@
     }
 
     function fillFilters() {
-      const scenes = [...new Set(state.episodes.map(ep => ep.scene).filter(Boolean))].sort();
-      els['scene-filter'].innerHTML = '<option value="all">All scenes</option>' +
-        scenes.map(scene => `<option value="${escapeHtml(scene)}">${escapeHtml(titleize(scene))}</option>`).join('');
+      const hands = orderedValues(state.episodes.map(ep => ep.hand), ['allegro', 'inspire']);
+      const statuses = orderedValues(state.episodes.map(ep => ep.status), ['success', 'fail']);
+      const scenes = orderedValues(state.episodes.map(ep => ep.scene));
+      renderCheckboxGroup('hand-filter', 'hand', hands);
+      renderCheckboxGroup('status-filter', 'status', statuses);
+      renderCheckboxGroup('scene-filter', 'scene', scenes);
+    }
 
-      const usedObjects = new Set(state.episodes.map(ep => ep.objId));
-      const objectOptions = state.catalog
-        .filter(obj => usedObjects.has(obj.id))
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map(obj => `<option value="${escapeHtml(obj.id)}">${escapeHtml(obj.name)}</option>`);
-      els['object-filter'].innerHTML = '<option value="all">All objects</option>' + objectOptions.join('');
+    function orderedValues(values, preferred = []) {
+      const set = new Set(values.filter(Boolean));
+      return [
+        ...preferred.filter(value => set.delete(value)),
+        ...[...set].sort((a, b) => titleize(a).localeCompare(titleize(b)))
+      ];
+    }
+
+    function renderCheckboxGroup(id, name, values) {
+      els[id].innerHTML = values.map(value =>
+        `<label class="check-chip">
+          <input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(value)}" checked>
+          <span>${escapeHtml(titleize(value))}</span>
+        </label>`
+      ).join('') || '<span class="empty-check">No options</span>';
     }
 
     function renderSummary() {
@@ -873,11 +922,14 @@
     function filters() {
       return {
         q: els['search'].value.trim().toLowerCase(),
-        hand: els['hand-filter'].value,
-        status: els['status-filter'].value,
-        scene: els['scene-filter'].value,
-        object: els['object-filter'].value
+        hands: checkedValues('hand-filter'),
+        statuses: checkedValues('status-filter'),
+        scenes: checkedValues('scene-filter')
       };
+    }
+
+    function checkedValues(id) {
+      return new Set([...els[id].querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value));
     }
 
     function filteredEpisodes() {
@@ -895,10 +947,9 @@
           ep.status
         ].join(' ').toLowerCase();
         return (!f.q || haystack.includes(f.q)) &&
-          (f.hand === 'all' || ep.hand === f.hand) &&
-          (f.status === 'all' || ep.status === f.status) &&
-          (f.scene === 'all' || ep.scene === f.scene) &&
-          (f.object === 'all' || ep.objId === f.object);
+          f.hands.has(ep.hand) &&
+          f.statuses.has(ep.status) &&
+          f.scenes.has(ep.scene);
       });
     }
 
@@ -1068,9 +1119,9 @@
 
       const f = filters();
       const episodes = state.episodes.filter(ep =>
-        (f.hand === 'all' || ep.hand === f.hand) &&
-        (f.status === 'all' || ep.status === f.status) &&
-        (f.scene === 'all' || ep.scene === f.scene) &&
+        f.hands.has(ep.hand) &&
+        f.statuses.has(ep.status) &&
+        f.scenes.has(ep.scene) &&
         (!f.q || `${ep.objId} ${ep.objName}`.toLowerCase().includes(f.q))
       );
       const byObject = new Map();
@@ -1104,10 +1155,24 @@
       }).join('') || '<div class="empty-inline">No matching objects.</div>';
       els['object-strip'].querySelectorAll('.object-tile').forEach(btn => {
         bindTileActivation(btn, () => {
-          els['object-filter'].value = btn.dataset.object;
-          syncAfterFilterChange();
+          const next = matchingObjectEpisode(btn.dataset.object) ||
+            state.episodes.find(ep => ep.objId === btn.dataset.object);
+          if (!next) return;
+          state.currentKey = next.key;
+          state.currentCamera = next.cameras[0] || null;
+          renderAll();
         });
       });
+    }
+
+    function matchingObjectEpisode(objId) {
+      const f = filters();
+      return state.episodes.find(ep =>
+        ep.objId === objId &&
+        f.hands.has(ep.hand) &&
+        f.statuses.has(ep.status) &&
+        f.scenes.has(ep.scene)
+      );
     }
 
     function renderPoseRow() {
@@ -1122,9 +1187,9 @@
       const f = filters();
       const poseItems = state.episodes.filter(item =>
           item.objId === ep.objId &&
-          (f.hand === 'all' || item.hand === f.hand) &&
-          (f.status === 'all' || item.status === f.status) &&
-          (f.scene === 'all' || item.scene === f.scene)
+          f.hands.has(item.hand) &&
+          f.statuses.has(item.status) &&
+          f.scenes.has(item.scene)
       ).slice(0, 48);
       els['pose-count'].textContent = `${poseItems.length} pose candidates`;
       if (!open) {

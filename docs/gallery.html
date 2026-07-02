@@ -60,7 +60,7 @@
     .control-deck {
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: minmax(140px, .85fr) minmax(150px, .85fr) minmax(220px, 1.15fr) minmax(260px, 1.25fr);
+      grid-template-columns: minmax(140px, .85fr) minmax(150px, .85fr) minmax(220px, 1.15fr);
       gap: 14px;
       padding: 12px 14px;
       align-items: start;
@@ -139,57 +139,6 @@
       color: var(--text-muted);
       font-size: .76em;
       font-weight: 800;
-    }
-
-    .scene-mark {
-      position: relative;
-      flex: 0 0 auto;
-      width: 18px;
-      height: 16px;
-      border: 1px solid rgba(31, 29, 26, .32);
-      border-radius: 3px;
-      background: #fff;
-    }
-
-    .scene-mark::before,
-    .scene-mark::after {
-      content: "";
-      position: absolute;
-      background: rgba(31, 29, 26, .5);
-    }
-
-    .scene-box::before {
-      inset: 4px;
-      border: 1px solid rgba(226, 96, 59, .65);
-      border-radius: 2px;
-      background: rgba(226, 96, 59, .16);
-    }
-
-    .scene-shelf::before,
-    .scene-shelf::after {
-      left: 3px;
-      right: 3px;
-      height: 1px;
-    }
-
-    .scene-shelf::before {
-      top: 5px;
-      box-shadow: 0 4px 0 rgba(31, 29, 26, .5);
-    }
-
-    .scene-shelf::after {
-      bottom: 3px;
-    }
-
-    .scene-wall {
-      background: linear-gradient(90deg, #fff 0 31%, #f2eee8 31% 34%, #fff 34% 66%, #f2eee8 66% 69%, #fff 69%);
-    }
-
-    .scene-wall::before {
-      left: 3px;
-      right: 3px;
-      bottom: 3px;
-      height: 1px;
     }
 
     .viewer-main {
@@ -572,10 +521,6 @@
         <label id="scene-filter-label">Scene</label>
         <div class="check-group" id="scene-filter" role="group" aria-labelledby="scene-filter-label"></div>
       </div>
-      <div class="field">
-        <label for="episode-select">Episode / grasp</label>
-        <select id="episode-select"></select>
-      </div>
     </section>
 
     <section class="explorer-layout">
@@ -664,7 +609,6 @@
       'hand-filter',
       'status-filter',
       'scene-filter',
-      'episode-select',
       'object-selector',
       'pose-selector',
       'view-selector',
@@ -712,13 +656,6 @@
     function bindEvents() {
       ['hand-filter', 'status-filter', 'scene-filter'].forEach(id => {
         els[id].addEventListener('change', syncAfterFilterChange);
-      });
-
-      els['episode-select'].addEventListener('change', () => {
-        state.currentKey = els['episode-select'].value;
-        const ep = currentEpisode();
-        state.currentCamera = ep?.cameras?.[0] || null;
-        renderAll();
       });
 
       ['object', 'pose', 'view'].forEach(name => {
@@ -922,15 +859,9 @@
       els[id].innerHTML = values.map(value =>
         `<label class="check-chip">
           <input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(value)}" checked>
-          ${name === 'scene' ? sceneMarker(value) : ''}
           <span>${escapeHtml(titleize(value))}</span>
         </label>`
       ).join('') || '<span class="empty-check">No options</span>';
-    }
-
-    function sceneMarker(value) {
-      const key = String(value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-      return `<span class="scene-mark scene-${escapeHtml(key)}" aria-hidden="true"></span>`;
     }
 
     function renderSummary() {
@@ -957,11 +888,6 @@
     }
 
     function syncAfterFilterChange() {
-      const visible = filteredEpisodes();
-      if (!visible.some(ep => ep.key === state.currentKey)) {
-        state.currentKey = visible[0]?.key || null;
-        state.currentCamera = visible[0]?.cameras?.[0] || null;
-      }
       renderAll();
     }
 
@@ -987,26 +913,22 @@
     }
 
     function renderAll() {
-      renderEpisodeSelect();
+      ensureCurrentEpisodeVisible();
       renderMainPanel();
       renderSelectorRows();
     }
 
-    function renderEpisodeSelect() {
+    function ensureCurrentEpisodeVisible() {
       const visible = filteredEpisodes();
       if (!visible.length) {
-        els['episode-select'].innerHTML = '<option value="">No matching episodes</option>';
         state.currentKey = null;
+        state.currentCamera = null;
         return;
       }
       if (!visible.some(ep => ep.key === state.currentKey)) {
         state.currentKey = visible[0].key;
         state.currentCamera = visible[0].cameras[0] || null;
       }
-      els['episode-select'].innerHTML = visible.map(ep => {
-        const label = `${ep.objName} - ${titleize(ep.hand)} - ${ep.rankLabel} - ${titleize(ep.scene)} - ${ep.status}`;
-        return `<option value="${escapeHtml(ep.key)}"${ep.key === state.currentKey ? ' selected' : ''}>${escapeHtml(label)}</option>`;
-      }).join('');
     }
 
     function currentEpisode() {

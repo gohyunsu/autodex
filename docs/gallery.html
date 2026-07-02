@@ -393,14 +393,40 @@
     }
 
     .object-tile img,
-    .pose-tile video,
-    .view-tile video {
+    .tile-preview {
       width: 100%;
       height: 108px;
       display: block;
       background: var(--surface-2);
       object-fit: cover;
       pointer-events: none;
+    }
+
+    .tile-preview {
+      display: grid;
+      place-items: center;
+      padding: 10px;
+      background: #efe8de;
+      color: var(--text);
+      font-size: .82em;
+      font-weight: 850;
+      text-align: center;
+    }
+
+    .pose-preview {
+      background: #eee9e0;
+    }
+
+    .view-preview {
+      background: #e9edf0;
+    }
+
+    .tile-preview span {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .object-tile img {
@@ -585,7 +611,7 @@
         </div>
 
         <div class="screen-wrap">
-          <video id="main-video" controls muted loop playsinline preload="metadata"></video>
+          <video id="main-video" controls muted loop playsinline preload="none"></video>
           <div class="screen-placeholder" id="pending-layer">
             <div class="placeholder-box">
               <h3 id="pending-title">Asset pending</h3>
@@ -612,6 +638,7 @@
       episodes: [],
       currentKey: null,
       currentCamera: null,
+      mediaRequested: false,
       openSelector: null,
       autoScrollRail: null,
       autoScrollFrame: null,
@@ -904,6 +931,7 @@
     }
 
     function syncAfterFilterChange() {
+      state.mediaRequested = false;
       renderAll();
     }
 
@@ -972,7 +1000,11 @@
       els['selected-subtitle'].textContent = `${titleize(ep.scene)} scene ${ep.sceneInfo.slice(1).join(' / ')} | view ${state.currentCamera || 'none'} | ${ep.status}`;
 
       if (state.mode === 'video') {
-        showVideo(videoUrl(ep, state.currentCamera));
+        if (state.mediaRequested && state.currentCamera) {
+          showVideo(videoUrl(ep, state.currentCamera));
+        } else {
+          showPending('Video not loaded', 'Select an object, pose, or view to load the selected video.');
+        }
       } else {
         const model = modelUrl(ep);
         if (model) {
@@ -993,7 +1025,7 @@
       }
       els['view-strip'].innerHTML = cameras.map((cam, idx) =>
         `<button class="view-tile ${cam === state.currentCamera ? 'active' : ''}" data-camera="${escapeHtml(cam)}" title="${escapeHtml(cam)}">
-          <video src="${videoUrl(ep, cam)}" muted playsinline preload="metadata"></video>
+          <div class="tile-preview view-preview"><span>View ${idx + 1}</span></div>
           <div class="tile-body">
             <div class="tile-title">View ${idx + 1}</div>
             <div class="tile-sub">${escapeHtml(cam)}</div>
@@ -1003,14 +1035,9 @@
       els['view-strip'].querySelectorAll('.view-tile').forEach(btn => {
         bindTileActivation(btn, () => {
           state.currentCamera = btn.dataset.camera;
+          state.mediaRequested = true;
           renderMainPanel();
           renderSelectorRows();
-        });
-        const vid = btn.querySelector('video');
-        btn.addEventListener('mouseenter', () => vid.play().catch(() => {}));
-        btn.addEventListener('mouseleave', () => {
-          vid.pause();
-          vid.currentTime = 0;
         });
       });
     }
@@ -1122,6 +1149,7 @@
           if (!next) return;
           state.currentKey = next.key;
           state.currentCamera = next.cameras[0] || null;
+          state.mediaRequested = true;
           renderAll();
         });
       });
@@ -1155,7 +1183,7 @@
       els['pose-strip'].innerHTML = poseItems.map(item => {
         const active = item.key === state.currentKey;
         return `<button class="pose-tile ${active ? 'active' : ''}" data-key="${escapeHtml(item.key)}">
-          <video src="${turntableUrl(item)}" muted loop playsinline preload="metadata"></video>
+          <div class="tile-preview pose-preview"><span>${escapeHtml(item.rankLabel)}</span></div>
           <div class="tile-body">
             <div class="tile-title">${escapeHtml(item.rankLabel)}</div>
             <div class="tile-sub">${escapeHtml(titleize(item.hand))} | ${escapeHtml(titleize(item.scene))}</div>
@@ -1171,13 +1199,8 @@
           state.currentKey = btn.dataset.key;
           const next = currentEpisode();
           state.currentCamera = next?.cameras?.[0] || null;
+          state.mediaRequested = true;
           renderAll();
-        });
-        const vid = btn.querySelector('video');
-        btn.addEventListener('mouseenter', () => vid.play().catch(() => {}));
-        btn.addEventListener('mouseleave', () => {
-          vid.pause();
-          vid.currentTime = 0;
         });
       });
     }

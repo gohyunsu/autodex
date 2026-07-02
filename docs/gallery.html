@@ -272,8 +272,12 @@
     }
 
     .selector-stack {
+      --selector-row-height: 39px;
+      --selector-rail-height: 176px;
       position: relative;
       z-index: 5;
+      height: calc(var(--selector-row-height) * 3);
+      overflow: visible;
       background: #fcfbf9;
       border-top: 1px solid var(--line);
     }
@@ -283,10 +287,18 @@
       border-bottom: 1px solid var(--line);
       background: #fcfbf9;
       z-index: 1;
+      transition: transform .16s ease;
     }
 
     .selector-row.open {
       z-index: 20;
+    }
+
+    #object-selector.open ~ #pose-selector,
+    #object-selector.open ~ #view-selector,
+    #pose-selector.open ~ #view-selector {
+      z-index: 25;
+      transform: translateY(var(--selector-rail-height));
     }
 
     .selector-row-header {
@@ -353,6 +365,7 @@
       box-sizing: border-box;
       display: flex;
       gap: 8px;
+      height: 0;
       min-width: 0;
       max-height: 0;
       overflow-x: auto;
@@ -368,12 +381,13 @@
       scroll-behavior: auto;
       scrollbar-width: thin;
       touch-action: pan-x;
-      transition: max-height .16s ease, padding-top .16s ease, padding-bottom .16s ease, border-top-width .16s ease, border-bottom-width .16s ease, opacity .12s ease;
+      transition: height .16s ease, max-height .16s ease, padding-top .16s ease, padding-bottom .16s ease, border-top-width .16s ease, border-bottom-width .16s ease, opacity .12s ease;
       visibility: hidden;
     }
 
     .selector-row.open .selector-rail {
-      max-height: 190px;
+      height: var(--selector-rail-height);
+      max-height: var(--selector-rail-height);
       padding-top: 8px;
       padding-bottom: 10px;
       border-top-width: 1px;

@@ -1094,7 +1094,7 @@
       }
       els['object-strip'].innerHTML = items.map(item => {
         const active = currentEpisode()?.objId === item.id;
-        const thumb = item.hasThumbnail ? `objects/${item.id}/thumb.png` : '';
+        const thumb = item.hasThumbnail ? `objects/${item.id}/thumb.png?v=24` : '';
         return `<button class="object-tile ${active ? 'active' : ''}" data-object="${escapeHtml(item.id)}">
           ${thumb ? `<img src="${thumb}" alt="${escapeHtml(item.name)}" loading="lazy">` : '<div class="empty-inline">No thumbnail</div>'}
           <div class="tile-body">

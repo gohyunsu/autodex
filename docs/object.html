@@ -167,7 +167,7 @@
 
     function renderSummary(obj, count, nSuccess, nFail, nUntested) {
       const thumbSrc = obj.has_thumbnail
-        ? `objects/${obj.id}/thumb.png`
+        ? `objects/${obj.id}/thumb.png?v=24`
         : `https://via.placeholder.com/320/f5f0e9/8a8178?text=${encodeURIComponent(obj.name)}`;
       document.getElementById('object-summary').innerHTML = `
         <img src="${thumbSrc}" alt="${obj.name}">

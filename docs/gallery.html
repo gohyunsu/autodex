@@ -60,13 +60,13 @@
     .control-deck {
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: minmax(160px, 1.05fr) minmax(170px, .9fr) minmax(170px, .9fr) minmax(220px, 1.15fr) minmax(220px, 1.2fr);
-      gap: 8px;
-      padding: 10px;
-      align-items: end;
+      grid-template-columns: minmax(140px, .85fr) minmax(150px, .85fr) minmax(220px, 1.15fr) minmax(260px, 1.25fr);
+      gap: 14px;
+      padding: 12px 14px;
+      align-items: start;
     }
 
-    .field label {
+    .field > label {
       display: block;
       margin-bottom: 4px;
       color: var(--text-muted);
@@ -76,7 +76,6 @@
       text-transform: uppercase;
     }
 
-    .field input[type="search"],
     .field select {
       min-height: 38px;
       width: 100%;
@@ -88,7 +87,6 @@
       outline: none;
     }
 
-    .field input[type="search"]:focus,
     .field select:focus {
       border-color: var(--accent);
     }
@@ -99,14 +97,7 @@
       align-items: center;
       flex-wrap: wrap;
       gap: 6px;
-      padding: 5px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-    }
-
-    .check-group:focus-within {
-      border-color: var(--accent);
+      padding: 0;
     }
 
     .check-chip {
@@ -117,7 +108,7 @@
       padding: 4px 8px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: var(--surface-2);
+      background: transparent;
       color: var(--text-muted);
       font-size: .76em;
       font-weight: 800;
@@ -132,6 +123,10 @@
       color: var(--text);
     }
 
+    .check-chip:focus-within {
+      border-color: var(--accent);
+    }
+
     .check-chip input {
       width: 13px;
       height: 13px;
@@ -144,6 +139,57 @@
       color: var(--text-muted);
       font-size: .76em;
       font-weight: 800;
+    }
+
+    .scene-mark {
+      position: relative;
+      flex: 0 0 auto;
+      width: 18px;
+      height: 16px;
+      border: 1px solid rgba(31, 29, 26, .32);
+      border-radius: 3px;
+      background: #fff;
+    }
+
+    .scene-mark::before,
+    .scene-mark::after {
+      content: "";
+      position: absolute;
+      background: rgba(31, 29, 26, .5);
+    }
+
+    .scene-box::before {
+      inset: 4px;
+      border: 1px solid rgba(226, 96, 59, .65);
+      border-radius: 2px;
+      background: rgba(226, 96, 59, .16);
+    }
+
+    .scene-shelf::before,
+    .scene-shelf::after {
+      left: 3px;
+      right: 3px;
+      height: 1px;
+    }
+
+    .scene-shelf::before {
+      top: 5px;
+      box-shadow: 0 4px 0 rgba(31, 29, 26, .5);
+    }
+
+    .scene-shelf::after {
+      bottom: 3px;
+    }
+
+    .scene-wall {
+      background: linear-gradient(90deg, #fff 0 31%, #f2eee8 31% 34%, #fff 34% 66%, #f2eee8 66% 69%, #fff 69%);
+    }
+
+    .scene-wall::before {
+      left: 3px;
+      right: 3px;
+      bottom: 3px;
+      height: 1px;
     }
 
     .viewer-main {
@@ -515,10 +561,6 @@
 
     <section class="control-deck" aria-label="Gallery controls">
       <div class="field">
-        <label for="search">Search</label>
-        <input id="search" type="search" placeholder="object, grasp, scene">
-      </div>
-      <div class="field">
         <label id="hand-filter-label">Hand</label>
         <div class="check-group" id="hand-filter" role="group" aria-labelledby="hand-filter-label"></div>
       </div>
@@ -619,7 +661,6 @@
     const els = {};
     [
       'summary-pills',
-      'search',
       'hand-filter',
       'status-filter',
       'scene-filter',
@@ -669,7 +710,6 @@
     });
 
     function bindEvents() {
-      els['search'].addEventListener('input', syncAfterFilterChange);
       ['hand-filter', 'status-filter', 'scene-filter'].forEach(id => {
         els[id].addEventListener('change', syncAfterFilterChange);
       });
@@ -882,9 +922,15 @@
       els[id].innerHTML = values.map(value =>
         `<label class="check-chip">
           <input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(value)}" checked>
+          ${name === 'scene' ? sceneMarker(value) : ''}
           <span>${escapeHtml(titleize(value))}</span>
         </label>`
       ).join('') || '<span class="empty-check">No options</span>';
+    }
+
+    function sceneMarker(value) {
+      const key = String(value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+      return `<span class="scene-mark scene-${escapeHtml(key)}" aria-hidden="true"></span>`;
     }
 
     function renderSummary() {
@@ -921,7 +967,6 @@
 
     function filters() {
       return {
-        q: els['search'].value.trim().toLowerCase(),
         hands: checkedValues('hand-filter'),
         statuses: checkedValues('status-filter'),
         scenes: checkedValues('scene-filter')
@@ -934,23 +979,11 @@
 
     function filteredEpisodes() {
       const f = filters();
-      return state.episodes.filter(ep => {
-        const haystack = [
-          ep.objId,
-          ep.objName,
-          ep.hand,
-          ep.rankLabel,
-          ep.rank,
-          ep.scene,
-          ep.sceneInfo.join(' '),
-          ep.dirIdx,
-          ep.status
-        ].join(' ').toLowerCase();
-        return (!f.q || haystack.includes(f.q)) &&
-          f.hands.has(ep.hand) &&
-          f.statuses.has(ep.status) &&
-          f.scenes.has(ep.scene);
-      });
+      return state.episodes.filter(ep =>
+        f.hands.has(ep.hand) &&
+        f.statuses.has(ep.status) &&
+        f.scenes.has(ep.scene)
+      );
     }
 
     function renderAll() {
@@ -1121,8 +1154,7 @@
       const episodes = state.episodes.filter(ep =>
         f.hands.has(ep.hand) &&
         f.statuses.has(ep.status) &&
-        f.scenes.has(ep.scene) &&
-        (!f.q || `${ep.objId} ${ep.objName}`.toLowerCase().includes(f.q))
+        f.scenes.has(ep.scene)
       );
       const byObject = new Map();
       episodes.forEach(ep => {

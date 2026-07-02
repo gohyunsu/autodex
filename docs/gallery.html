@@ -272,12 +272,20 @@
     }
 
     .selector-stack {
+      position: relative;
+      z-index: 20;
+      overflow: visible;
       background: #fcfbf9;
       border-top: 1px solid var(--line);
     }
 
     .selector-row {
+      position: relative;
       border-bottom: 1px solid var(--line);
+    }
+
+    .selector-row.open {
+      z-index: 40;
     }
 
     .selector-row-header {
@@ -336,20 +344,38 @@
     }
 
     .selector-rail {
-      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      display: flex;
       gap: 8px;
       min-width: 0;
+      max-height: 190px;
       overflow-x: auto;
       overflow-y: hidden;
       overscroll-behavior-x: contain;
       padding: 8px 10px 10px 90px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #fcfbf9;
+      box-shadow: 0 16px 28px rgba(40, 30, 20, .14);
+      opacity: 0;
+      pointer-events: none;
       scroll-behavior: auto;
       scrollbar-width: thin;
       touch-action: pan-x;
+      transform: translateY(-3px);
+      transition: opacity .12s ease, transform .12s ease;
+      visibility: hidden;
     }
 
     .selector-row.open .selector-rail {
-      display: flex;
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+      visibility: visible;
     }
 
     .object-tile,
@@ -392,6 +418,9 @@
 
     .object-tile img {
       height: 108px;
+      padding: 6px;
+      background: var(--bg);
+      object-fit: contain;
     }
 
     .tile-body {
@@ -664,16 +693,16 @@
         attachRailAutoScroll(rail);
         row.addEventListener('pointerenter', () => {
           state.openSelector = name;
-          renderSelectorRows();
+          updateSelectorOpenState();
         });
         row.addEventListener('pointerleave', () => {
           stopRailAutoScroll();
           state.openSelector = null;
-          renderSelectorRows();
+          updateSelectorOpenState();
         });
         row.addEventListener('focusin', () => {
           state.openSelector = name;
-          renderSelectorRows();
+          updateSelectorOpenState();
         });
         row.addEventListener('focusout', event => {
           requestAnimationFrame(() => {
@@ -681,7 +710,7 @@
             stopRailAutoScroll();
             if (state.openSelector === name) {
               state.openSelector = null;
-              renderSelectorRows();
+              updateSelectorOpenState();
             }
           });
         });
@@ -970,12 +999,7 @@
     function renderViewRow() {
       const ep = currentEpisode();
       const cameras = ep?.cameras || [];
-      const open = state.openSelector === 'view';
       els['view-count'].textContent = cameras.length ? `${cameras.length} views` : '0 views';
-      if (!open) {
-        els['view-strip'].innerHTML = '';
-        return;
-      }
       if (!ep || !cameras.length) {
         els['view-strip'].innerHTML = '<div class="empty-inline">No camera streams listed for this episode.</div>';
         return;
@@ -1037,20 +1061,23 @@
     }
 
     function clearMedia() {
-      els['view-strip'].innerHTML = '';
       showPending('No episode selected', 'Adjust filters to select an episode.');
     }
 
     function renderSelectorRows() {
       updateSelectorHeaders();
+      updateSelectorOpenState();
+      renderObjectRow();
+      renderPoseRow();
+      renderViewRow();
+    }
+
+    function updateSelectorOpenState() {
       ['object', 'pose', 'view'].forEach(name => {
         const open = state.openSelector === name;
         els[`${name}-selector`].classList.toggle('open', open);
         els[`${name}-header`].setAttribute('aria-expanded', String(open));
       });
-      renderObjectRow();
-      renderPoseRow();
-      renderViewRow();
     }
 
     function updateSelectorHeaders() {
@@ -1070,8 +1097,6 @@
     }
 
     function renderObjectRow() {
-      const open = state.openSelector === 'object';
-
       const f = filters();
       const episodes = state.episodes.filter(ep =>
         f.hands.has(ep.hand) &&
@@ -1088,15 +1113,11 @@
       });
       const items = [...byObject.values()].sort((a, b) => a.name.localeCompare(b.name));
       els['object-count'].textContent = `${items.length} objects`;
-      if (!open) {
-        els['object-strip'].innerHTML = '';
-        return;
-      }
       els['object-strip'].innerHTML = items.map(item => {
         const active = currentEpisode()?.objId === item.id;
         const thumb = item.hasThumbnail ? `objects/${item.id}/thumb.png?v=24` : '';
         return `<button class="object-tile ${active ? 'active' : ''}" data-object="${escapeHtml(item.id)}">
-          ${thumb ? `<img src="${thumb}" alt="${escapeHtml(item.name)}" loading="lazy">` : '<div class="empty-inline">No thumbnail</div>'}
+          ${thumb ? `<img src="${thumb}" alt="${escapeHtml(item.name)}" loading="eager">` : '<div class="empty-inline">No thumbnail</div>'}
           <div class="tile-body">
             <div class="tile-title">${escapeHtml(item.name)}</div>
             <div class="tile-sub">${item.episodes} episodes</div>
@@ -1130,8 +1151,6 @@
     }
 
     function renderPoseRow() {
-      const open = state.openSelector === 'pose';
-
       const ep = currentEpisode();
       if (!ep) {
         els['pose-count'].textContent = '0 poses';
@@ -1146,10 +1165,6 @@
           f.scenes.has(item.scene)
       ).slice(0, 48);
       els['pose-count'].textContent = `${poseItems.length} pose candidates`;
-      if (!open) {
-        els['pose-strip'].innerHTML = '';
-        return;
-      }
       els['pose-strip'].innerHTML = poseItems.map(item => {
         const active = item.key === state.currentKey;
         return `<button class="pose-tile ${active ? 'active' : ''}" data-key="${escapeHtml(item.key)}">

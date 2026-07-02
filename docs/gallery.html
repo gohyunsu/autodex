@@ -294,7 +294,7 @@
       overflow-x: auto;
       overflow-y: hidden;
       overscroll-behavior-x: contain;
-      padding: 0 10px 8px 90px;
+      padding: 8px 10px 10px 90px;
       scrollbar-width: thin;
     }
 
@@ -639,9 +639,24 @@
       });
 
       ['object', 'pose', 'view'].forEach(name => {
-        els[`${name}-header`].addEventListener('click', () => {
-          state.openSelector = state.openSelector === name ? null : name;
+        const row = els[`${name}-selector`];
+        row.addEventListener('pointerenter', () => {
+          state.openSelector = name;
           renderSelectorRows();
+        });
+        row.addEventListener('pointerleave', () => {
+          state.openSelector = null;
+          renderSelectorRows();
+        });
+        row.addEventListener('focusin', () => {
+          state.openSelector = name;
+          renderSelectorRows();
+        });
+        row.addEventListener('focusout', event => {
+          if (!row.contains(event.relatedTarget)) {
+            state.openSelector = null;
+            renderSelectorRows();
+          }
         });
       });
 

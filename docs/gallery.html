@@ -58,8 +58,7 @@
     }
 
     .control-deck,
-    .viewer-main,
-    .context-panel {
+    .viewer-main {
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -296,84 +295,6 @@
       transform: rotate(90deg);
     }
 
-    .side-stack {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .context-panel {
-      padding: 14px;
-      min-width: 0;
-    }
-
-    .panel-heading {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 10px;
-    }
-
-    .panel-heading h3 {
-      font-size: .94em;
-      line-height: 1.2;
-    }
-
-    .meta-list {
-      display: grid;
-      gap: 8px;
-    }
-
-    .meta-row {
-      display: grid;
-      grid-template-columns: 92px minmax(0, 1fr);
-      gap: 8px;
-      align-items: start;
-      font-size: .88em;
-    }
-
-    .meta-row .key {
-      color: var(--text-muted);
-      font-weight: 800;
-    }
-
-    .meta-row .value {
-      min-width: 0;
-      color: var(--text);
-      font-weight: 700;
-      word-break: break-word;
-    }
-
-    .definition-list {
-      display: grid;
-      gap: 9px;
-      color: var(--text-muted);
-      font-size: .84em;
-      line-height: 1.4;
-    }
-
-    .definition-list strong {
-      display: block;
-      color: var(--text);
-      font-size: .95em;
-    }
-
-    .asset-state {
-      display: grid;
-      gap: 8px;
-    }
-
-    .asset-line {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      color: var(--text-muted);
-      font-size: .85em;
-      font-weight: 700;
-    }
-
     .selector-rail {
       display: none;
       gap: 8px;
@@ -483,9 +404,6 @@
         grid-template-columns: 1fr;
       }
 
-      .side-stack {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
     }
 
     @media (max-width: 760px) {
@@ -495,8 +413,7 @@
       }
 
       .gallery-head,
-      .control-deck,
-      .side-stack {
+      .control-deck {
         grid-template-columns: 1fr;
       }
 
@@ -516,10 +433,6 @@
 
       .mode-btn {
         flex: 1;
-      }
-
-      .meta-row {
-        grid-template-columns: 86px minmax(0, 1fr);
       }
 
       .selector-row-header {
@@ -652,34 +565,6 @@
           <model-viewer id="model-viewer" camera-controls auto-rotate shadow-intensity="0.25" style="display:none;"></model-viewer>
         </div>
       </section>
-
-      <aside class="side-stack">
-        <section class="context-panel">
-          <div class="panel-heading">
-            <h3>Selected Episode</h3>
-            <span id="status-badge" class="badge">-</span>
-          </div>
-          <div class="meta-list" id="episode-meta"></div>
-        </section>
-
-        <section class="context-panel">
-          <div class="panel-heading">
-            <h3>Terms</h3>
-          </div>
-          <div class="definition-list">
-            <div><strong>Episode</strong>One recorded execution trial for a selected object, hand, grasp candidate, and scene.</div>
-            <div><strong>Grasp</strong>The candidate hand pose used to start the robot execution; this page indexes it by rank.</div>
-            <div><strong>Scene</strong>The capture setup such as shelf, wall, or box, plus its scene identifiers.</div>
-          </div>
-        </section>
-
-        <section class="context-panel">
-          <div class="panel-heading">
-            <h3>Tracking Layers</h3>
-          </div>
-          <div class="asset-state" id="asset-state"></div>
-        </section>
-      </aside>
     </section>
   </main>
 
@@ -721,9 +606,6 @@
       'pending-title',
       'pending-copy',
       'model-viewer',
-      'status-badge',
-      'episode-meta',
-      'asset-state',
       'object-strip',
       'object-count',
       'pose-strip',
@@ -906,7 +788,6 @@
     function renderAll() {
       renderEpisodeSelect();
       renderMainPanel();
-      renderSidePanels();
       renderSelectorRows();
     }
 
@@ -989,7 +870,6 @@
         btn.addEventListener('click', () => {
           state.currentCamera = btn.dataset.camera;
           renderMainPanel();
-          renderSidePanels();
           renderSelectorRows();
         });
         const vid = btn.querySelector('video');
@@ -1036,42 +916,6 @@
     function clearMedia() {
       els['view-strip'].innerHTML = '';
       showPending('No episode selected', 'Adjust filters to select an episode.');
-    }
-
-    function renderSidePanels() {
-      const ep = currentEpisode();
-      if (!ep) {
-        els['status-badge'].textContent = '-';
-        els['episode-meta'].innerHTML = '';
-        els['asset-state'].innerHTML = '';
-        return;
-      }
-      els['status-badge'].className = `badge ${ep.status === 'success' ? 'badge-success' : ep.status === 'fail' ? 'badge-fail' : ''}`;
-      els['status-badge'].textContent = titleize(ep.status);
-      els['episode-meta'].innerHTML = [
-        ['Object', ep.objName],
-        ['Hand', titleize(ep.hand)],
-        ['Grasp', ep.rankLabel],
-        ['Scene', ep.sceneInfo.join(' / ') || titleize(ep.scene)],
-        ['Episode dir', ep.dirIdx || '-'],
-        ['Views', `${ep.cameras.length} camera streams`],
-        ['Current view', state.currentCamera || '-'],
-        ['Success label', ep.status === 'success' ? `${ep.nSuccess ?? 1}/${ep.nTrials ?? 1}` : 'failed']
-      ].map(([key, value]) =>
-        `<div class="meta-row"><div class="key">${escapeHtml(key)}</div><div class="value">${escapeHtml(String(value))}</div></div>`
-      ).join('');
-
-      const hasObjectModel = Boolean(modelUrl(ep));
-      els['asset-state'].innerHTML = [
-        assetLine('Captured video', ep.cameras.length ? 'ready' : 'missing', ep.cameras.length ? 'ok' : 'warn'),
-        assetLine('Pose turntable', 'ready', 'ok'),
-        assetLine('Interactive 3D', hasObjectModel ? 'ready' : 'pending', hasObjectModel ? 'ok' : 'warn'),
-        assetLine('Robot/object path', 'pending GLB export', 'warn')
-      ].join('');
-    }
-
-    function assetLine(label, value, tone) {
-      return `<div class="asset-line"><span>${escapeHtml(label)}</span><span class="chip ${tone}">${escapeHtml(value)}</span></div>`;
     }
 
     function renderSelectorRows() {

@@ -21,6 +21,15 @@ env/
 .DS_Store
 *.log
 output/
+AutoDex.pdf
+
+# Local helper tools / external checkout links
+.tools/
+autodex-code
+
+# Local planning notes that are not intended for remote
+docs/gallery.md
+docs/interactive_3d_glb_generation_plan.md
 
 # Video/media
 *.png

@@ -827,7 +827,8 @@ def run_single_trial(
     exec_rel = os.path.join(raw_rel, "exec")
     place_rel = os.path.join(raw_rel, "place")
     raw_dir = os.path.join(img_dir, "raw")
-    rcc.start("video", True, exec_rel)
+    if not args.no_video:
+        rcc.start("video", True, exec_rel)
     timestamp_monitor.start(os.path.join(raw_dir, "timestamps"))
     executor.start_recording(raw_dir)
     sync_generator.start(fps=30)
@@ -958,7 +959,8 @@ def run_single_trial(
             return _stamp_end(fail)
 
         # Resume video for place phase.
-        rcc.start("video", True, place_rel)
+        if not args.no_video:
+            rcc.start("video", True, place_rel)
 
     # Reposition obj at (x=R_PLACE, y=0, current_z) before place. For v7,
     # pick yaw that makes the NEXT cov-greedy grasp IK-reachable. Hold z so
@@ -1321,6 +1323,10 @@ def main():
                         choices=["table", "wall", "shelf", "cluttered"])
     parser.add_argument("--success_only", action="store_true")
     parser.add_argument("--viz", action="store_true")
+    parser.add_argument("--no_video", action="store_true",
+                        help="Skip camera video recording during exec/place "
+                             "(robot exec, timestamps, charuco image labeling "
+                             "still run).")
     parser.add_argument("--max_trials", type=int, default=0,
                         help="0=unlimited. With --ignore_coverage: cap demo run.")
     parser.add_argument("--ignore_coverage", action="store_true",

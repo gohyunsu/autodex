@@ -5,7 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dataset Gallery - AutoDex</title>
   <link rel="stylesheet" href="css/style.css">
-  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
   <style>
     .viewer-container {
       max-width: 1500px;
@@ -172,44 +179,45 @@
       font-size: .82em;
     }
 
-    .mode-tabs {
-      display: inline-flex;
-      flex: 0 0 auto;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface-2);
-    }
-
-    .mode-btn {
-      min-height: 34px;
-      padding: 7px 12px;
-      border: 0;
-      border-right: 1px solid var(--line);
-      background: transparent;
-      color: var(--text-muted);
-      font-size: .84em;
-      font-weight: 800;
-    }
-
-    .mode-btn:last-child {
-      border-right: 0;
-    }
-
-    .mode-btn.active {
-      background: var(--accent);
-      color: #fff;
-    }
-
     .screen-wrap {
-      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 10px;
       width: 100%;
-      aspect-ratio: 16 / 9;
+      aspect-ratio: 32 / 9;
+      padding: 10px;
+      background: #171613;
+    }
+
+    .media-panel {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid rgba(216, 221, 210, .34);
+      border-radius: var(--radius);
       background: #080808;
     }
 
+    .media-panel-label {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 4;
+      padding: 5px 8px;
+      border: 1px solid rgba(255, 255, 255, .18);
+      border-radius: 6px;
+      background: rgba(12, 12, 12, .58);
+      color: rgba(255, 255, 255, .86);
+      font-size: .72em;
+      font-weight: 850;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      backdrop-filter: blur(8px);
+    }
+
     .screen-wrap video,
-    .screen-wrap model-viewer,
+    .interactive-3d-viewer,
     .screen-placeholder {
       position: absolute;
       inset: 0;
@@ -221,6 +229,86 @@
       display: block;
       object-fit: contain;
       background: #080808;
+    }
+
+    .interactive-3d-viewer {
+      display: none;
+      background: #f7f8f4;
+      overflow: hidden;
+    }
+
+    .interactive-3d-canvas {
+      position: absolute;
+      inset: 0;
+    }
+
+    .interactive-3d-canvas canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .interactive-3d-status {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 3;
+      max-width: min(460px, calc(100% - 24px));
+      padding: 8px 10px;
+      border: 1px solid rgba(216, 221, 210, .88);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, .82);
+      color: var(--text-muted);
+      font-size: .78em;
+      font-weight: 800;
+      backdrop-filter: blur(8px);
+    }
+
+    .interactive-3d-controls {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 3;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      border: 1px solid rgba(216, 221, 210, .9);
+      border-radius: 7px;
+      background: rgba(255, 255, 255, .86);
+      backdrop-filter: blur(8px);
+    }
+
+    .interactive-3d-controls button,
+    .interactive-3d-controls select {
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font-size: .78em;
+      font-weight: 850;
+    }
+
+    .interactive-3d-controls button {
+      min-width: 70px;
+      padding: 0 10px;
+    }
+
+    .interactive-3d-controls input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .interactive-3d-readout {
+      min-width: 86px;
+      color: var(--text-muted);
+      font-size: .76em;
+      font-weight: 850;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
     }
 
     .screen-placeholder {
@@ -542,13 +630,13 @@
         flex-direction: column;
       }
 
-      .mode-tabs,
-      .mode-btn {
-        width: 100%;
+      .screen-wrap {
+        grid-template-columns: 1fr;
+        aspect-ratio: auto;
       }
 
-      .mode-btn {
-        flex: 1;
+      .media-panel {
+        aspect-ratio: 16 / 9;
       }
 
       .selector-row-header {
@@ -602,10 +690,6 @@
             <h2 id="selected-title">Loading...</h2>
             <div class="sub" id="selected-subtitle"></div>
           </div>
-          <div class="mode-tabs" role="group" aria-label="Content mode">
-            <button class="mode-btn active" id="mode-video" data-mode="video">Video</button>
-            <button class="mode-btn" id="mode-3d" data-mode="reconstruction">Interactive 3D</button>
-          </div>
         </div>
 
         <div class="selector-stack" aria-label="Thumbnail selectors">
@@ -641,19 +725,51 @@
         </div>
 
         <div class="screen-wrap">
-          <video id="main-video" controls muted loop playsinline preload="none"></video>
-          <div class="screen-placeholder" id="pending-layer">
-            <div class="placeholder-box">
-              <h3 id="pending-title">Asset pending</h3>
-              <p id="pending-copy"></p>
-              <div class="playback-rail">
-                <span>0:00</span>
-                <input type="range" min="0" max="100" value="0" disabled>
-                <span>0:00</span>
+          <section class="media-panel video-panel" aria-label="Selected camera video">
+            <div class="media-panel-label">Video</div>
+            <video id="main-video" controls muted loop playsinline preload="none"></video>
+            <div class="screen-placeholder" id="video-pending-layer">
+              <div class="placeholder-box">
+                <h3 id="video-pending-title">Video pending</h3>
+                <p id="video-pending-copy"></p>
+                <div class="playback-rail">
+                  <span>0:00</span>
+                  <input type="range" min="0" max="100" value="0" disabled>
+                  <span>0:00</span>
+                </div>
               </div>
             </div>
-          </div>
-          <model-viewer id="model-viewer" camera-controls auto-rotate shadow-intensity="0.25" style="display:none;"></model-viewer>
+          </section>
+
+          <section class="media-panel three-d-panel" aria-label="Selected episode interactive 3D">
+            <div class="media-panel-label">Interactive 3D</div>
+            <div class="screen-placeholder" id="pending-layer">
+              <div class="placeholder-box">
+                <h3 id="pending-title">Asset pending</h3>
+                <p id="pending-copy"></p>
+                <div class="playback-rail">
+                  <span>0:00</span>
+                  <input type="range" min="0" max="100" value="0" disabled>
+                  <span>0:00</span>
+                </div>
+              </div>
+            </div>
+            <div class="interactive-3d-viewer" id="interactive-3d-viewer">
+              <div class="interactive-3d-canvas" id="interactive-3d-canvas"></div>
+              <div class="interactive-3d-status" id="interactive-3d-status">Interactive 3D</div>
+              <div class="interactive-3d-controls">
+                <button id="interactive-3d-play" type="button">Pause</button>
+                <input id="interactive-3d-scrub" type="range" min="0" max="1000" value="0">
+                <div class="interactive-3d-readout" id="interactive-3d-readout">0.00s</div>
+                <select id="interactive-3d-speed" aria-label="3D playback speed">
+                  <option value="0.5">0.5x</option>
+                  <option value="1" selected>1x</option>
+                  <option value="2">2x</option>
+                  <option value="4">4x</option>
+                </select>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
     </section>
@@ -661,6 +777,9 @@
 
   <script>
     const HF_BASE = 'https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main';
+    const THREE_MODULE_URL = 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    const ORBIT_CONTROLS_URL = 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+    const GLTF_LOADER_URL = 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
     const state = {
       catalog: [],
       experiments: {},
@@ -672,8 +791,26 @@
       openSelector: null,
       autoScrollRail: null,
       autoScrollFrame: null,
-      autoScrollVelocity: 0,
-      mode: 'video'
+      autoScrollVelocity: 0
+    };
+    const viewer3d = {
+      initialized: false,
+      loading: null,
+      THREE: null,
+      OrbitControls: null,
+      GLTFLoader: null,
+      renderer: null,
+      scene: null,
+      camera: null,
+      controls: null,
+      mixer: null,
+      clock: null,
+      model: null,
+      duration: 0,
+      playing: true,
+      currentSrc: '',
+      frame: null,
+      resizeObserver: null
     };
 
     const els = {};
@@ -694,10 +831,19 @@
       'selected-title',
       'selected-subtitle',
       'main-video',
+      'video-pending-layer',
+      'video-pending-title',
+      'video-pending-copy',
       'pending-layer',
       'pending-title',
       'pending-copy',
-      'model-viewer',
+      'interactive-3d-viewer',
+      'interactive-3d-canvas',
+      'interactive-3d-status',
+      'interactive-3d-play',
+      'interactive-3d-scrub',
+      'interactive-3d-readout',
+      'interactive-3d-speed',
       'object-strip',
       'object-count',
       'pose-strip',
@@ -709,7 +855,7 @@
     Promise.all([
       fetch('catalog.json').then(r => r.json()),
       fetch('experiments.json').then(r => r.json()),
-      fetch('assets3d.json').then(r => r.json()).catch(() => ({objects: {}}))
+      fetch('assets3d.json?v=interactive-3d-hf-v1').then(r => r.json()).catch(() => ({objects: {}}))
     ]).then(([catalog, experiments, assets]) => {
       state.catalog = catalog || [];
       state.experiments = experiments || {};
@@ -760,12 +906,6 @@
         });
       });
 
-      document.querySelectorAll('.mode-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          state.mode = btn.dataset.mode;
-          renderMainPanel();
-        });
-      });
     }
 
     function bindTileActivation(tile, onActivate) {
@@ -870,6 +1010,24 @@
       const open = (params.get('selector') || params.get('open') || '').toLowerCase();
       if (['object', 'pose', 'view'].includes(open)) {
         state.openSelector = open;
+      }
+      const requestedObject = params.get('object');
+      const requestedHand = params.get('hand') || params.get('embodiment');
+      const requestedRank = params.get('rank') || params.get('pose') || params.get('episode');
+      const requestedCamera = params.get('camera') || params.get('view');
+      if (requestedObject || requestedHand || requestedRank) {
+        const target = state.episodes.find(ep =>
+          (!requestedObject || ep.objId === requestedObject) &&
+          (!requestedHand || ep.hand === requestedHand) &&
+          (!requestedRank || ep.rank === requestedRank || ep.rankStr === padRank(requestedRank))
+        );
+        if (target) {
+          state.currentKey = target.key;
+          state.currentCamera = requestedCamera && target.cameras.includes(requestedCamera)
+            ? requestedCamera
+            : target.cameras[0] || null;
+          state.mediaRequested = true;
+        }
       }
     }
 
@@ -1012,10 +1170,6 @@
 
     function renderMainPanel() {
       const ep = currentEpisode();
-      document.querySelectorAll('.mode-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.mode === state.mode);
-      });
-
       if (!ep) {
         els['selected-title'].textContent = 'No matching episode';
         els['selected-subtitle'].textContent = '';
@@ -1030,19 +1184,17 @@
       els['selected-title'].textContent = `${ep.objName} - ${titleize(ep.hand)} - ${ep.rankLabel}`;
       els['selected-subtitle'].textContent = `${titleize(ep.scene)} scene ${ep.sceneInfo.slice(1).join(' / ')} | view ${state.currentCamera || 'none'} | ${ep.status}`;
 
-      if (state.mode === 'video') {
-        if (state.mediaRequested && state.currentCamera) {
-          showVideo(videoUrl(ep, state.currentCamera));
-        } else {
-          showPending('Video not loaded', 'Select an object, pose, or view to load the selected video.');
-        }
+      if (state.mediaRequested && state.currentCamera) {
+        showVideo(videoUrl(ep, state.currentCamera));
       } else {
-        const model = modelUrl(ep);
-        if (model) {
-          showModel(model);
-        } else {
-          showPending('Interactive 3D pending', 'This viewer can load GLB or GLTF assets from the gallery manifest, but no reconstruction or trajectory asset is registered for this episode yet.');
-        }
+        showVideoPending('Video not loaded', 'Select an object, pose, or view to load the selected video.');
+      }
+
+      const model = modelUrl(ep);
+      if (model) {
+        showModel(model);
+      } else {
+        showModelPending('Interactive 3D pending', 'No animated GLB is registered for this episode yet.');
       }
     }
 
@@ -1069,13 +1221,13 @@
           state.mediaRequested = true;
           renderMainPanel();
           renderSelectorRows();
+          resetInteractive3DView({resetTime: true});
         });
       });
     }
 
     function showVideo(src) {
-      els['pending-layer'].classList.remove('visible');
-      els['model-viewer'].style.display = 'none';
+      els['video-pending-layer'].classList.remove('visible');
       els['main-video'].style.display = 'block';
       if (els['main-video'].src !== src) {
         els['main-video'].src = src;
@@ -1084,29 +1236,30 @@
     }
 
     function showModel(src) {
-      els['main-video'].pause();
-      els['main-video'].removeAttribute('src');
-      els['main-video'].load();
-      els['main-video'].style.display = 'none';
       els['pending-layer'].classList.remove('visible');
-      els['model-viewer'].style.display = 'block';
-      els['model-viewer'].src = src;
+      showInteractive3D(src);
     }
 
-    function showPending(title, copy) {
+    function showVideoPending(title, copy) {
       els['main-video'].pause();
       els['main-video'].removeAttribute('src');
       els['main-video'].load();
       els['main-video'].style.display = 'none';
-      els['model-viewer'].removeAttribute('src');
-      els['model-viewer'].style.display = 'none';
+      els['video-pending-title'].textContent = title;
+      els['video-pending-copy'].textContent = copy;
+      els['video-pending-layer'].classList.add('visible');
+    }
+
+    function showModelPending(title, copy) {
+      hideInteractive3D();
       els['pending-title'].textContent = title;
       els['pending-copy'].textContent = copy;
       els['pending-layer'].classList.add('visible');
     }
 
     function clearMedia() {
-      showPending('No episode selected', 'Adjust filters to select an episode.');
+      showVideoPending('No episode selected', 'Adjust filters to select an episode.');
+      showModelPending('No episode selected', 'Adjust filters to select an episode.');
     }
 
     function renderSelectorRows() {
@@ -1256,8 +1409,8 @@
       const entry = objects[ep.objId] || {};
       const recon = entry.reconstructions || entry.episodes || {};
       const episodeAsset = recon[ep.key] || recon[ep.rankStr] || recon[ep.rank] || null;
-      const candidate = episodeAsset?.url || episodeAsset?.glb || episodeAsset?.gltf ||
-        entry.url || entry.glb || entry.gltf || '';
+      const candidate = episodeAsset?.url || episodeAsset?.animated_glb || episodeAsset?.glb || episodeAsset?.gltf ||
+        entry.url || entry.animated_glb || entry.glb || entry.gltf || '';
       return candidate ? resolveAssetUrl(candidate) : '';
     }
 
@@ -1266,6 +1419,227 @@
       if (/^https?:\/\//.test(url)) return url;
       const base = state.assets.base_url || '';
       return `${base}${url}`;
+    }
+
+    async function showInteractive3D(src) {
+      els['interactive-3d-viewer'].style.display = 'block';
+      setInteractive3DStatus('Loading interactive 3D...');
+      try {
+        await ensureInteractive3D();
+        await loadInteractive3DModel(src);
+      } catch (error) {
+        console.error(error);
+        setInteractive3DStatus(`Interactive 3D failed: ${error.message || error}`);
+      }
+    }
+
+    function hideInteractive3D() {
+      els['interactive-3d-viewer'].style.display = 'none';
+      viewer3d.playing = false;
+      updateInteractivePlayButton();
+    }
+
+    function setInteractive3DStatus(message) {
+      els['interactive-3d-status'].textContent = message;
+    }
+
+    async function ensureInteractive3D() {
+      if (viewer3d.initialized) {
+        resizeInteractive3D();
+        return;
+      }
+      if (viewer3d.loading) return viewer3d.loading;
+      viewer3d.loading = (async () => {
+        const [threeModule, controlsModule, loaderModule] = await Promise.all([
+          import(THREE_MODULE_URL),
+          import(ORBIT_CONTROLS_URL),
+          import(GLTF_LOADER_URL)
+        ]);
+        viewer3d.THREE = threeModule;
+        viewer3d.OrbitControls = controlsModule.OrbitControls;
+        viewer3d.GLTFLoader = loaderModule.GLTFLoader;
+        viewer3d.clock = new viewer3d.THREE.Clock();
+
+        viewer3d.scene = new viewer3d.THREE.Scene();
+        viewer3d.scene.background = new viewer3d.THREE.Color(0xf7f8f4);
+        viewer3d.camera = new viewer3d.THREE.PerspectiveCamera(45, 1, 0.001, 20);
+        viewer3d.camera.up.set(0, 0, 1);
+        viewer3d.renderer = new viewer3d.THREE.WebGLRenderer({antialias: true, alpha: false});
+        viewer3d.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        viewer3d.renderer.outputColorSpace = viewer3d.THREE.SRGBColorSpace;
+        viewer3d.renderer.toneMapping = viewer3d.THREE.ACESFilmicToneMapping;
+        viewer3d.renderer.toneMappingExposure = 0.95;
+        els['interactive-3d-canvas'].appendChild(viewer3d.renderer.domElement);
+
+        viewer3d.controls = new viewer3d.OrbitControls(viewer3d.camera, viewer3d.renderer.domElement);
+        viewer3d.controls.enableDamping = true;
+        viewer3d.controls.screenSpacePanning = true;
+        viewer3d.scene.add(new viewer3d.THREE.HemisphereLight(0xffffff, 0x9fa69e, 1.8));
+        const key = new viewer3d.THREE.DirectionalLight(0xffffff, 2.2);
+        key.position.set(1.1, -1.2, 1.8);
+        viewer3d.scene.add(key);
+        const fill = new viewer3d.THREE.DirectionalLight(0xffffff, 0.8);
+        fill.position.set(-0.8, 0.9, 1.0);
+        viewer3d.scene.add(fill);
+        addInteractiveGrid();
+
+        els['interactive-3d-play'].addEventListener('click', () => {
+          viewer3d.playing = !viewer3d.playing;
+          viewer3d.clock.getDelta();
+          updateInteractivePlayButton();
+        });
+        els['interactive-3d-scrub'].addEventListener('input', () => {
+          const t = (Number(els['interactive-3d-scrub'].value) || 0) / 1000;
+          setInteractive3DTime(t);
+        });
+        els['interactive-3d-speed'].addEventListener('change', () => viewer3d.clock.getDelta());
+
+        viewer3d.resizeObserver = new ResizeObserver(resizeInteractive3D);
+        viewer3d.resizeObserver.observe(els['interactive-3d-viewer']);
+        window.addEventListener('resize', resizeInteractive3D);
+        viewer3d.initialized = true;
+        resizeInteractive3D();
+        animateInteractive3D();
+      })();
+      return viewer3d.loading;
+    }
+
+    function addInteractiveGrid(size = 1.2, divisions = 24) {
+      const THREE = viewer3d.THREE;
+      const group = new THREE.Group();
+      const material = new THREE.LineBasicMaterial({color: 0xc7cdc3, transparent: true, opacity: 0.58});
+      const half = size / 2;
+      const step = size / divisions;
+      for (let i = 0; i <= divisions; i += 1) {
+        const v = -half + i * step;
+        group.add(new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-half, v, 0), new THREE.Vector3(half, v, 0)]),
+          material
+        ));
+        group.add(new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(v, -half, 0), new THREE.Vector3(v, half, 0)]),
+          material
+        ));
+      }
+      viewer3d.scene.add(group);
+      viewer3d.scene.add(new THREE.AxesHelper(0.18));
+    }
+
+    function resizeInteractive3D() {
+      if (!viewer3d.renderer || !viewer3d.camera) return;
+      const rect = els['interactive-3d-viewer'].getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      viewer3d.camera.aspect = rect.width / rect.height;
+      viewer3d.camera.updateProjectionMatrix();
+      viewer3d.renderer.setSize(rect.width, rect.height, false);
+    }
+
+    async function loadInteractive3DModel(src) {
+      if (viewer3d.currentSrc === src && viewer3d.model) {
+        viewer3d.playing = true;
+        updateInteractivePlayButton();
+        setInteractive3DStatus('Interactive 3D');
+        return;
+      }
+      clearInteractive3DModel();
+      viewer3d.currentSrc = src;
+      setInteractive3DStatus('Fetching animated GLB...');
+      const loader = new viewer3d.GLTFLoader();
+      const gltf = await new Promise((resolve, reject) => {
+        loader.load(src, resolve, event => {
+          if (event.lengthComputable && event.total > 0) {
+            const pct = Math.max(0, Math.min(100, event.loaded / event.total * 100));
+            setInteractive3DStatus(`Loading animated GLB... ${pct.toFixed(0)}%`);
+          }
+        }, reject);
+      });
+      viewer3d.model = gltf.scene;
+      viewer3d.scene.add(viewer3d.model);
+      if (!gltf.animations?.length) {
+        setInteractive3DStatus('Loaded GLB has no animation clip');
+      } else {
+        viewer3d.mixer = new viewer3d.THREE.AnimationMixer(viewer3d.model);
+        viewer3d.duration = Math.max(...gltf.animations.map(clip => clip.duration || 0));
+        gltf.animations.forEach(clip => {
+          const action = viewer3d.mixer.clipAction(clip);
+          action.reset();
+          action.setLoop(viewer3d.THREE.LoopRepeat, Infinity);
+          action.play();
+        });
+        els['interactive-3d-scrub'].max = String(Math.max(1, Math.round(viewer3d.duration * 1000)));
+        viewer3d.playing = true;
+        updateInteractivePlayButton();
+        setInteractive3DTime(0);
+        setInteractive3DStatus(`Interactive 3D | ${gltf.animations.length} animation clip | ${viewer3d.duration.toFixed(2)}s`);
+      }
+      fitInteractiveCamera(viewer3d.model);
+      viewer3d.renderer.render(viewer3d.scene, viewer3d.camera);
+    }
+
+    function clearInteractive3DModel() {
+      if (!viewer3d.model) return;
+      viewer3d.scene.remove(viewer3d.model);
+      viewer3d.model.traverse(node => {
+        node.geometry?.dispose?.();
+        const materials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
+        materials.forEach(material => material.dispose?.());
+      });
+      viewer3d.model = null;
+      viewer3d.mixer = null;
+      viewer3d.duration = 0;
+      viewer3d.currentSrc = '';
+    }
+
+    function fitInteractiveCamera(root) {
+      const THREE = viewer3d.THREE;
+      root.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(root);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const radius = Math.max(size.x, size.y, size.z, 0.25);
+      viewer3d.camera.position.set(center.x + radius * 1.0, center.y - radius * 1.35, center.z + radius * 0.75);
+      viewer3d.controls.target.copy(center);
+      viewer3d.controls.update();
+    }
+
+    function resetInteractive3DView({resetTime = false} = {}) {
+      if (!viewer3d.model || !viewer3d.controls || !viewer3d.camera) return;
+      if (resetTime && viewer3d.mixer) {
+        setInteractive3DTime(0);
+      }
+      fitInteractiveCamera(viewer3d.model);
+      viewer3d.clock?.getDelta?.();
+      viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
+    }
+
+    function setInteractive3DTime(timeSec) {
+      if (!viewer3d.mixer) return;
+      const t = Math.max(0, Math.min(timeSec, viewer3d.duration || timeSec));
+      viewer3d.mixer.setTime(t);
+      viewer3d.model?.updateMatrixWorld(true);
+      els['interactive-3d-scrub'].value = String(Math.round(t * 1000));
+      els['interactive-3d-readout'].textContent = `${t.toFixed(2)}s`;
+      viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
+    }
+
+    function updateInteractivePlayButton() {
+      els['interactive-3d-play'].textContent = viewer3d.playing ? 'Pause' : 'Play';
+    }
+
+    function animateInteractive3D() {
+      viewer3d.frame = requestAnimationFrame(animateInteractive3D);
+      const delta = viewer3d.clock?.getDelta?.() || 0;
+      if (viewer3d.mixer && viewer3d.playing && els['interactive-3d-viewer'].style.display !== 'none') {
+        const speed = Number(els['interactive-3d-speed'].value) || 1;
+        viewer3d.mixer.update(delta * speed);
+        if (viewer3d.duration) {
+          const t = viewer3d.mixer.time % viewer3d.duration;
+          els['interactive-3d-scrub'].value = String(Math.round(t * 1000));
+          els['interactive-3d-readout'].textContent = `${t.toFixed(2)}s`;
+        }
+      }
+      viewer3d.controls?.update();
+      viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
     }
 
     function padRank(rank) {

@@ -514,6 +514,7 @@
     }
 
     .object-tile img,
+    .pose-tile img,
     .pose-tile video,
     .tile-preview {
       width: 100%;
@@ -776,7 +777,8 @@
   </main>
 
   <script>
-    const HF_BASE = 'https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main';
+    const ORIGINAL_HF_BASE = 'https://huggingface.co/datasets/willi19/autodex-gallery/resolve/main';
+    const PROXY_HF_BASE = 'https://huggingface.co/datasets/happyguma/autodex-gallery-proxy/resolve/main';
     const THREE_MODULE_URL = 'https://unpkg.com/three@0.160.0/build/three.module.js';
     const ORBIT_CONTROLS_URL = 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
     const GLTF_LOADER_URL = 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
@@ -1204,7 +1206,7 @@
       els['selected-subtitle'].textContent = `${titleize(ep.scene)} scene ${ep.sceneInfo.slice(1).join(' / ')} | view ${state.currentCamera || 'none'} | ${ep.status}`;
 
       if (state.mediaRequested && state.currentCamera) {
-        showVideo(videoUrl(ep, state.currentCamera));
+        showVideo(videoUrl(ep, state.currentCamera), originalVideoUrl(ep, state.currentCamera));
       } else {
         showVideoPending('Video not loaded', 'Select an object, pose, or view to load the selected video.');
       }
@@ -1245,17 +1247,26 @@
       });
     }
 
-    function showVideo(src) {
+    function showVideo(src, fallbackSrc = '') {
       els['video-pending-layer'].classList.remove('visible');
       const video = els['main-video'];
       video.style.display = 'block';
       video.muted = true;
       video.autoplay = true;
+      video.dataset.fallbackSrc = fallbackSrc || '';
+      const tryPlay = () => video.play().catch(() => {});
+      video.onerror = () => {
+        const fallback = video.dataset.fallbackSrc;
+        if (!fallback || video.getAttribute('src') === fallback) return;
+        video.dataset.fallbackSrc = '';
+        video.src = fallback;
+        video.load();
+        tryPlay();
+      };
       if (video.src !== src) {
         video.src = src;
         video.load();
       }
-      const tryPlay = () => video.play().catch(() => {});
       tryPlay();
       video.addEventListener('canplay', tryPlay, {once: true});
     }
@@ -1392,7 +1403,7 @@
       els['pose-strip'].innerHTML = poseItems.map(item => {
         const active = item.key === state.currentKey;
         return `<button class="pose-tile ${active ? 'active' : ''}" data-key="${escapeHtml(item.key)}">
-          <video src="${turntableUrl(item)}" muted loop playsinline preload="metadata"></video>
+          <img class="pose-thumb" src="${poseThumbnailUrl(item)}" alt="" loading="lazy" decoding="async">
           <div class="tile-body">
             <div class="tile-title">${escapeHtml(item.rankLabel)}</div>
             <div class="tile-sub">${escapeHtml(titleize(item.hand))} | ${escapeHtml(titleize(item.scene))}</div>
@@ -1411,22 +1422,37 @@
           state.mediaRequested = true;
           renderAll();
         });
-        const vid = btn.querySelector('video');
-        btn.addEventListener('mouseenter', () => vid.play().catch(() => {}));
-        btn.addEventListener('mouseleave', () => {
-          vid.pause();
-          vid.currentTime = 0;
-        });
+        bindPoseThumbnailFallback(btn);
       });
+    }
+
+    function bindPoseThumbnailFallback(btn) {
+      const img = btn.querySelector('img.pose-thumb');
+      if (!img) return;
+      img.addEventListener('error', () => {
+        const fallback = document.createElement('div');
+        fallback.className = 'tile-preview pose-preview';
+        fallback.innerHTML = '<span>Pose thumbnail pending</span>';
+        img.replaceWith(fallback);
+      }, {once: true});
     }
 
     function videoUrl(ep, camera) {
       if (!ep || !camera) return '';
-      return `${HF_BASE}/experiments/${ep.hand}/${ep.objId}/${ep.rankStr}/${camera}.mp4`;
+      return `${PROXY_HF_BASE}/experiments/${ep.hand}/${ep.objId}/${ep.rankStr}/${camera}.mp4`;
+    }
+
+    function originalVideoUrl(ep, camera) {
+      if (!ep || !camera) return '';
+      return `${ORIGINAL_HF_BASE}/experiments/${ep.hand}/${ep.objId}/${ep.rankStr}/${camera}.mp4`;
+    }
+
+    function poseThumbnailUrl(ep) {
+      return `${PROXY_HF_BASE}/pose_thumbnails/${ep.hand}/${ep.objId}/${ep.rankStr}/thumb.webp`;
     }
 
     function turntableUrl(ep) {
-      return `${HF_BASE}/turntable/${ep.hand}/${ep.objId}/${ep.rankStr}/turntable.mp4`;
+      return `${ORIGINAL_HF_BASE}/turntable/${ep.hand}/${ep.objId}/${ep.rankStr}/turntable.mp4`;
     }
 
     function episode3DAsset(ep) {

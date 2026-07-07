@@ -1115,17 +1115,15 @@
     }
 
     function selectInitialEpisode() {
-      const firstSuccess = state.episodes.find(ep => ep.status === 'success');
-      const first = firstSuccess || state.episodes[0] || null;
+      const first = defaultEpisodeFrom(state.episodes);
       if (first) {
         state.currentKey = first.key;
         state.currentCamera = first.cameras[0] || null;
-        state.mediaRequested = true;
+        state.mediaRequested = Boolean(state.currentCamera);
       }
     }
 
     function syncAfterFilterChange() {
-      state.mediaRequested = false;
       renderAll();
     }
 
@@ -1151,22 +1149,37 @@
     }
 
     function renderAll() {
-      ensureCurrentEpisodeVisible();
+      ensureCurrentEpisodeSelection();
       renderMainPanel();
       renderSelectorRows();
     }
 
-    function ensureCurrentEpisodeVisible() {
+    function ensureCurrentEpisodeSelection() {
       const visible = filteredEpisodes();
       if (!visible.length) {
         state.currentKey = null;
         state.currentCamera = null;
+        state.mediaRequested = false;
         return;
       }
-      if (!visible.some(ep => ep.key === state.currentKey)) {
-        state.currentKey = visible[0].key;
-        state.currentCamera = visible[0].cameras[0] || null;
+
+      const current = visible.find(ep => ep.key === state.currentKey);
+      if (!current) {
+        const next = defaultEpisodeFrom(visible);
+        state.currentKey = next.key;
+        state.currentCamera = next.cameras[0] || null;
+        state.mediaRequested = Boolean(state.currentCamera);
+        return;
       }
+
+      if (!state.currentCamera || !current.cameras.includes(state.currentCamera)) {
+        state.currentCamera = current.cameras[0] || null;
+      }
+      state.mediaRequested = Boolean(state.currentCamera);
+    }
+
+    function defaultEpisodeFrom(episodes) {
+      return episodes.find(ep => ep.status === 'success') || episodes[0] || null;
     }
 
     function currentEpisode() {
@@ -1185,6 +1198,7 @@
       if (!state.currentCamera || !ep.cameras.includes(state.currentCamera)) {
         state.currentCamera = ep.cameras[0] || null;
       }
+      state.mediaRequested = Boolean(state.currentCamera);
 
       els['selected-title'].textContent = `${ep.objName} - ${titleize(ep.hand)} - ${ep.rankLabel}`;
       els['selected-subtitle'].textContent = `${titleize(ep.scene)} scene ${ep.sceneInfo.slice(1).join(' / ')} | view ${state.currentCamera || 'none'} | ${ep.status}`;

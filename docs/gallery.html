@@ -727,7 +727,7 @@
         <div class="screen-wrap">
           <section class="media-panel video-panel" aria-label="Selected camera video">
             <div class="media-panel-label">Video</div>
-            <video id="main-video" controls muted loop playsinline preload="none"></video>
+            <video id="main-video" controls autoplay muted loop playsinline preload="metadata"></video>
             <div class="screen-placeholder" id="video-pending-layer">
               <div class="placeholder-box">
                 <h3 id="video-pending-title">Video pending</h3>
@@ -806,9 +806,14 @@
       mixer: null,
       clock: null,
       model: null,
+      assetRoot: null,
       duration: 0,
       playing: true,
       currentSrc: '',
+      loadToken: 0,
+      cameraViews: null,
+      currentCameraViewsSrc: '',
+      cameraViewsCache: new Map(),
       frame: null,
       resizeObserver: null
     };
@@ -855,7 +860,7 @@
     Promise.all([
       fetch('catalog.json').then(r => r.json()),
       fetch('experiments.json').then(r => r.json()),
-      fetch('assets3d.json?v=interactive-3d-hf-v1').then(r => r.json()).catch(() => ({objects: {}}))
+      fetch('assets3d.json?v=camera-views-v2').then(r => r.json()).catch(() => ({objects: {}}))
     ]).then(([catalog, experiments, assets]) => {
       state.catalog = catalog || [];
       state.experiments = experiments || {};
@@ -1192,7 +1197,7 @@
 
       const model = modelUrl(ep);
       if (model) {
-        showModel(model);
+        showModel(model, cameraViewsUrl(ep));
       } else {
         showModelPending('Interactive 3D pending', 'No animated GLB is registered for this episode yet.');
       }
@@ -1221,23 +1226,29 @@
           state.mediaRequested = true;
           renderMainPanel();
           renderSelectorRows();
-          resetInteractive3DView({resetTime: true});
+          applySelectedCameraView({resetTime: true});
         });
       });
     }
 
     function showVideo(src) {
       els['video-pending-layer'].classList.remove('visible');
-      els['main-video'].style.display = 'block';
-      if (els['main-video'].src !== src) {
-        els['main-video'].src = src;
-        els['main-video'].load();
+      const video = els['main-video'];
+      video.style.display = 'block';
+      video.muted = true;
+      video.autoplay = true;
+      if (video.src !== src) {
+        video.src = src;
+        video.load();
       }
+      const tryPlay = () => video.play().catch(() => {});
+      tryPlay();
+      video.addEventListener('canplay', tryPlay, {once: true});
     }
 
-    function showModel(src) {
+    function showModel(src, cameraViewsSrc) {
       els['pending-layer'].classList.remove('visible');
-      showInteractive3D(src);
+      showInteractive3D(src, cameraViewsSrc);
     }
 
     function showVideoPending(title, copy) {
@@ -1251,7 +1262,7 @@
     }
 
     function showModelPending(title, copy) {
-      hideInteractive3D();
+      hideInteractive3D({clear: true});
       els['pending-title'].textContent = title;
       els['pending-copy'].textContent = copy;
       els['pending-layer'].classList.add('visible');
@@ -1404,13 +1415,27 @@
       return `${HF_BASE}/turntable/${ep.hand}/${ep.objId}/${ep.rankStr}/turntable.mp4`;
     }
 
-    function modelUrl(ep) {
+    function episode3DAsset(ep) {
       const objects = state.assets.objects || {};
       const entry = objects[ep.objId] || {};
       const recon = entry.reconstructions || entry.episodes || {};
-      const episodeAsset = recon[ep.key] || recon[ep.rankStr] || recon[ep.rank] || null;
+      return recon[ep.key] || recon[ep.rankStr] || recon[ep.rank] || null;
+    }
+
+    function modelUrl(ep) {
+      const objects = state.assets.objects || {};
+      const entry = objects[ep.objId] || {};
+      const episodeAsset = episode3DAsset(ep);
       const candidate = episodeAsset?.url || episodeAsset?.animated_glb || episodeAsset?.glb || episodeAsset?.gltf ||
         entry.url || entry.animated_glb || entry.glb || entry.gltf || '';
+      return candidate ? resolveAssetUrl(candidate) : '';
+    }
+
+    function cameraViewsUrl(ep) {
+      const objects = state.assets.objects || {};
+      const entry = objects[ep.objId] || {};
+      const episodeAsset = episode3DAsset(ep);
+      const candidate = episodeAsset?.camera_views_json || entry.camera_views_json || '';
       return candidate ? resolveAssetUrl(candidate) : '';
     }
 
@@ -1421,22 +1446,32 @@
       return `${base}${url}`;
     }
 
-    async function showInteractive3D(src) {
+    async function showInteractive3D(src, cameraViewsSrc = '') {
+      const token = ++viewer3d.loadToken;
       els['interactive-3d-viewer'].style.display = 'block';
       setInteractive3DStatus('Loading interactive 3D...');
       try {
         await ensureInteractive3D();
-        await loadInteractive3DModel(src);
+        if (token !== viewer3d.loadToken) return;
+        await Promise.all([
+          loadInteractive3DModel(src, token),
+          loadInteractive3DCameraViews(cameraViewsSrc, token)
+        ]);
+        if (token !== viewer3d.loadToken) return;
+        applySelectedCameraView();
       } catch (error) {
+        if (token !== viewer3d.loadToken) return;
         console.error(error);
         setInteractive3DStatus(`Interactive 3D failed: ${error.message || error}`);
       }
     }
 
-    function hideInteractive3D() {
+    function hideInteractive3D({clear = false} = {}) {
+      if (clear) viewer3d.loadToken += 1;
       els['interactive-3d-viewer'].style.display = 'none';
       viewer3d.playing = false;
       updateInteractivePlayButton();
+      if (clear) clearInteractive3DModel();
     }
 
     function setInteractive3DStatus(message) {
@@ -1464,6 +1499,8 @@
         viewer3d.scene.background = new viewer3d.THREE.Color(0xf7f8f4);
         viewer3d.camera = new viewer3d.THREE.PerspectiveCamera(45, 1, 0.001, 20);
         viewer3d.camera.up.set(0, 0, 1);
+        viewer3d.assetRoot = new viewer3d.THREE.Group();
+        viewer3d.scene.add(viewer3d.assetRoot);
         viewer3d.renderer = new viewer3d.THREE.WebGLRenderer({antialias: true, alpha: false});
         viewer3d.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         viewer3d.renderer.outputColorSpace = viewer3d.THREE.SRGBColorSpace;
@@ -1534,7 +1571,7 @@
       viewer3d.renderer.setSize(rect.width, rect.height, false);
     }
 
-    async function loadInteractive3DModel(src) {
+    async function loadInteractive3DModel(src, token) {
       if (viewer3d.currentSrc === src && viewer3d.model) {
         viewer3d.playing = true;
         updateInteractivePlayButton();
@@ -1553,8 +1590,12 @@
           }
         }, reject);
       });
+      if (token !== viewer3d.loadToken || viewer3d.currentSrc !== src) {
+        disposeObject3D(gltf.scene);
+        return;
+      }
       viewer3d.model = gltf.scene;
-      viewer3d.scene.add(viewer3d.model);
+      viewer3d.assetRoot.add(viewer3d.model);
       if (!gltf.animations?.length) {
         setInteractive3DStatus('Loaded GLB has no animation clip');
       } else {
@@ -1572,22 +1613,57 @@
         setInteractive3DTime(0);
         setInteractive3DStatus(`Interactive 3D | ${gltf.animations.length} animation clip | ${viewer3d.duration.toFixed(2)}s`);
       }
-      fitInteractiveCamera(viewer3d.model);
+      applySelectedCameraView();
       viewer3d.renderer.render(viewer3d.scene, viewer3d.camera);
     }
 
-    function clearInteractive3DModel() {
-      if (!viewer3d.model) return;
-      viewer3d.scene.remove(viewer3d.model);
-      viewer3d.model.traverse(node => {
-        node.geometry?.dispose?.();
-        const materials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
-        materials.forEach(material => material.dispose?.());
+    async function loadInteractive3DCameraViews(src, token) {
+      if (!src) {
+        viewer3d.cameraViews = null;
+        viewer3d.currentCameraViewsSrc = '';
+        return;
+      }
+      if (viewer3d.currentCameraViewsSrc === src && viewer3d.cameraViews) return;
+      if (viewer3d.cameraViewsCache.has(src)) {
+        viewer3d.cameraViews = viewer3d.cameraViewsCache.get(src);
+        viewer3d.currentCameraViewsSrc = src;
+        return;
+      }
+      const payload = await fetch(src).then(r => {
+        if (!r.ok) throw new Error(`camera_views fetch failed: ${r.status}`);
+        return r.json();
       });
+      if (token !== viewer3d.loadToken) return;
+      viewer3d.cameraViewsCache.set(src, payload);
+      viewer3d.cameraViews = payload;
+      viewer3d.currentCameraViewsSrc = src;
+    }
+
+    function clearInteractive3DModel() {
+      viewer3d.mixer?.stopAllAction?.();
+      if (viewer3d.assetRoot) {
+        [...viewer3d.assetRoot.children].forEach(child => {
+          viewer3d.assetRoot.remove(child);
+          disposeObject3D(child);
+        });
+      } else if (viewer3d.model && viewer3d.scene) {
+        viewer3d.scene.remove(viewer3d.model);
+        disposeObject3D(viewer3d.model);
+      }
       viewer3d.model = null;
       viewer3d.mixer = null;
       viewer3d.duration = 0;
       viewer3d.currentSrc = '';
+      els['interactive-3d-scrub'].value = '0';
+      els['interactive-3d-readout'].textContent = '0.00s';
+    }
+
+    function disposeObject3D(root) {
+      root?.traverse?.(node => {
+        node.geometry?.dispose?.();
+        const materials = Array.isArray(node.material) ? node.material : [node.material].filter(Boolean);
+        materials.forEach(material => material.dispose?.());
+      });
     }
 
     function fitInteractiveCamera(root) {
@@ -1597,7 +1673,10 @@
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
       const radius = Math.max(size.x, size.y, size.z, 0.25);
+      viewer3d.camera.up.set(0, 0, 1);
+      viewer3d.camera.fov = 45;
       viewer3d.camera.position.set(center.x + radius * 1.0, center.y - radius * 1.35, center.z + radius * 0.75);
+      viewer3d.camera.updateProjectionMatrix();
       viewer3d.controls.target.copy(center);
       viewer3d.controls.update();
     }
@@ -1610,6 +1689,64 @@
       fitInteractiveCamera(viewer3d.model);
       viewer3d.clock?.getDelta?.();
       viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
+    }
+
+    function applySelectedCameraView({resetTime = false} = {}) {
+      if (!viewer3d.model || !viewer3d.controls || !viewer3d.camera) return false;
+      const view = viewer3d.cameraViews?.views?.[state.currentCamera];
+      if (!view?.three) {
+        resetInteractive3DView({resetTime});
+        return false;
+      }
+      if (resetTime && viewer3d.mixer) {
+        setInteractive3DTime(0);
+      }
+
+      const THREE = viewer3d.THREE;
+      const pos = vectorFromArray(view.three.position);
+      const forward = vectorFromArray(view.three.forward).normalize();
+      const up = vectorFromArray(view.three.up).normalize();
+      const bounds = modelBounds(viewer3d.model);
+      const toCenter = bounds.center.clone().sub(pos);
+      let focusDistance = toCenter.dot(forward);
+      if (!Number.isFinite(focusDistance) || focusDistance <= bounds.radius * 0.25) {
+        focusDistance = Math.max(bounds.radius * 2.5, toCenter.length());
+      }
+      const target = pos.clone().add(forward.multiplyScalar(focusDistance));
+
+      viewer3d.camera.up.copy(up);
+      viewer3d.camera.position.copy(pos);
+      viewer3d.camera.fov = Number(view.three.fov_y_deg) || 45;
+      viewer3d.camera.near = 0.001;
+      viewer3d.camera.far = Math.max(20, focusDistance + bounds.radius * 4);
+      viewer3d.camera.updateProjectionMatrix();
+      viewer3d.controls.target.copy(target);
+      viewer3d.controls.update();
+      viewer3d.clock?.getDelta?.();
+      viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
+      setInteractive3DStatus(`Interactive 3D | view ${state.currentCamera}`);
+      return true;
+    }
+
+    function vectorFromArray(values) {
+      const THREE = viewer3d.THREE;
+      return new THREE.Vector3(
+        Number(values?.[0]) || 0,
+        Number(values?.[1]) || 0,
+        Number(values?.[2]) || 0
+      );
+    }
+
+    function modelBounds(root) {
+      const THREE = viewer3d.THREE;
+      root.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(root);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      return {
+        center,
+        radius: Math.max(size.x, size.y, size.z, 0.25)
+      };
     }
 
     function setInteractive3DTime(timeSec) {

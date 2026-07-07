@@ -816,6 +816,7 @@
       cameraViews: null,
       currentCameraViewsSrc: '',
       cameraViewsCache: new Map(),
+      syncEventsBound: false,
       frame: null,
       resizeObserver: null
     };
@@ -1248,11 +1249,13 @@
     }
 
     function showVideo(src, fallbackSrc = '') {
+      bindSynchronizedPlaybackEvents();
       els['video-pending-layer'].classList.remove('visible');
       const video = els['main-video'];
       video.style.display = 'block';
       video.muted = true;
       video.autoplay = true;
+      video.playbackRate = playbackSpeed();
       video.dataset.fallbackSrc = fallbackSrc || '';
       const tryPlay = () => video.play().catch(() => {});
       video.onerror = () => {
@@ -1261,12 +1264,14 @@
         video.dataset.fallbackSrc = '';
         video.src = fallback;
         video.load();
+        syncInteractive3DToVideo({force: true});
         tryPlay();
       };
       if (video.src !== src) {
         video.src = src;
         video.load();
       }
+      syncInteractive3DToVideo({force: true});
       tryPlay();
       video.addEventListener('canplay', tryPlay, {once: true});
     }
@@ -1279,6 +1284,8 @@
     function showVideoPending(title, copy) {
       els['main-video'].pause();
       els['main-video'].removeAttribute('src');
+      els['main-video'].dataset.fallbackSrc = '';
+      els['main-video'].onerror = null;
       els['main-video'].load();
       els['main-video'].style.display = 'none';
       els['video-pending-title'].textContent = title;
@@ -1559,17 +1566,22 @@
         fill.position.set(-0.8, 0.9, 1.0);
         viewer3d.scene.add(fill);
         addInteractiveGrid();
+        bindSynchronizedPlaybackEvents();
 
         els['interactive-3d-play'].addEventListener('click', () => {
-          viewer3d.playing = !viewer3d.playing;
-          viewer3d.clock.getDelta();
-          updateInteractivePlayButton();
+          toggleSynchronizedPlayback();
         });
         els['interactive-3d-scrub'].addEventListener('input', () => {
           const t = (Number(els['interactive-3d-scrub'].value) || 0) / 1000;
-          setInteractive3DTime(t);
+          seekSynchronizedPlayback(t);
         });
-        els['interactive-3d-speed'].addEventListener('change', () => viewer3d.clock.getDelta());
+        els['interactive-3d-speed'].addEventListener('change', () => {
+          const video = els['main-video'];
+          const speed = playbackSpeed();
+          if (video) video.playbackRate = speed;
+          viewer3d.clock.getDelta();
+          syncInteractive3DToVideo({force: true});
+        });
 
         viewer3d.resizeObserver = new ResizeObserver(resizeInteractive3D);
         viewer3d.resizeObserver.observe(els['interactive-3d-viewer']);
@@ -1651,6 +1663,7 @@
         viewer3d.playing = true;
         updateInteractivePlayButton();
         setInteractive3DTime(0);
+        syncInteractive3DToVideo({force: true});
         setInteractive3DStatus(`Interactive 3D | ${gltf.animations.length} animation clip | ${viewer3d.duration.toFixed(2)}s`);
       }
       applySelectedCameraView();
@@ -1789,25 +1802,118 @@
       };
     }
 
-    function setInteractive3DTime(timeSec) {
+    function bindSynchronizedPlaybackEvents() {
+      if (viewer3d.syncEventsBound) return;
+      const video = els['main-video'];
+      if (!video) return;
+      viewer3d.syncEventsBound = true;
+
+      video.addEventListener('play', () => {
+        viewer3d.playing = true;
+        viewer3d.clock?.getDelta?.();
+        syncInteractive3DToVideo({force: true});
+        updateInteractivePlayButton();
+      });
+      video.addEventListener('pause', () => {
+        viewer3d.playing = false;
+        syncInteractive3DToVideo({force: true});
+        updateInteractivePlayButton();
+      });
+      video.addEventListener('ended', () => {
+        viewer3d.playing = false;
+        syncInteractive3DToVideo({force: true});
+        updateInteractivePlayButton();
+      });
+      video.addEventListener('emptied', () => {
+        viewer3d.playing = false;
+        updateInteractivePlayButton();
+      });
+      ['loadedmetadata', 'canplay', 'seeking', 'seeked', 'timeupdate', 'waiting', 'stalled', 'ratechange'].forEach(eventName => {
+        video.addEventListener(eventName, () => syncInteractive3DToVideo({force: true}));
+      });
+    }
+
+    function playbackSpeed() {
+      return Number(els['interactive-3d-speed'].value) || 1;
+    }
+
+    function hasVideoSource(video = els['main-video']) {
+      return Boolean(video?.getAttribute('src')) && getComputedStyle(video).display !== 'none';
+    }
+
+    function shouldSyncInteractive3DToVideo() {
+      return Boolean(viewer3d.mixer && viewer3d.duration && hasVideoSource());
+    }
+
+    function videoSyncedTime(video = els['main-video']) {
+      const raw = Number.isFinite(video?.currentTime) ? video.currentTime : 0;
+      if (!viewer3d.duration) return Math.max(0, raw);
+      return ((raw % viewer3d.duration) + viewer3d.duration) % viewer3d.duration;
+    }
+
+    function syncInteractive3DToVideo({force = false, render = true} = {}) {
+      if (!shouldSyncInteractive3DToVideo()) return false;
+      const video = els['main-video'];
+      const target = videoSyncedTime(video);
+      const current = ((viewer3d.mixer.time % viewer3d.duration) + viewer3d.duration) % viewer3d.duration;
+      const videoAdvancing = !video.paused && !video.ended;
+      if (force || videoAdvancing || video.seeking || Math.abs(current - target) > 0.025) {
+        setInteractive3DTime(target, {render});
+      }
+      viewer3d.playing = videoAdvancing;
+      updateInteractivePlayButton();
+      return true;
+    }
+
+    function toggleSynchronizedPlayback() {
+      const video = els['main-video'];
+      if (hasVideoSource(video)) {
+        if (video.paused || video.ended) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+        syncInteractive3DToVideo({force: true});
+        return;
+      }
+
+      viewer3d.playing = !viewer3d.playing;
+      viewer3d.clock?.getDelta?.();
+      updateInteractivePlayButton();
+    }
+
+    function seekSynchronizedPlayback(timeSec) {
+      const video = els['main-video'];
+      if (hasVideoSource(video) && Number.isFinite(video.duration) && video.duration > 0) {
+        const maxTime = Math.max(0, video.duration - 0.001);
+        video.currentTime = Math.max(0, Math.min(timeSec, maxTime));
+      }
+      setInteractive3DTime(timeSec);
+      syncInteractive3DToVideo({force: true});
+    }
+
+    function setInteractive3DTime(timeSec, {render = true} = {}) {
       if (!viewer3d.mixer) return;
       const t = Math.max(0, Math.min(timeSec, viewer3d.duration || timeSec));
       viewer3d.mixer.setTime(t);
       viewer3d.model?.updateMatrixWorld(true);
       els['interactive-3d-scrub'].value = String(Math.round(t * 1000));
       els['interactive-3d-readout'].textContent = `${t.toFixed(2)}s`;
-      viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
+      if (render) viewer3d.renderer?.render(viewer3d.scene, viewer3d.camera);
     }
 
     function updateInteractivePlayButton() {
-      els['interactive-3d-play'].textContent = viewer3d.playing ? 'Pause' : 'Play';
+      const video = els['main-video'];
+      const playing = hasVideoSource(video) ? !video.paused && !video.ended : viewer3d.playing;
+      els['interactive-3d-play'].textContent = playing ? 'Pause' : 'Play';
     }
 
     function animateInteractive3D() {
       viewer3d.frame = requestAnimationFrame(animateInteractive3D);
       const delta = viewer3d.clock?.getDelta?.() || 0;
-      if (viewer3d.mixer && viewer3d.playing && els['interactive-3d-viewer'].style.display !== 'none') {
-        const speed = Number(els['interactive-3d-speed'].value) || 1;
+      const synced = syncInteractive3DToVideo({render: false});
+      if (!synced && viewer3d.mixer && viewer3d.playing && els['interactive-3d-viewer'].style.display !== 'none') {
+        const speed = playbackSpeed();
         viewer3d.mixer.update(delta * speed);
         if (viewer3d.duration) {
           const t = viewer3d.mixer.time % viewer3d.duration;

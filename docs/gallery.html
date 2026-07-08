@@ -1237,7 +1237,7 @@
           </div>
         </button>`
       ).join('');
-      els['view-strip'].querySelectorAll('.view-tile').forEach(btn => {
+      els['view-strip'].querySelectorAll('.view-tile').forEach((btn, idx) => {
         bindTileActivation(btn, () => {
           state.currentCamera = btn.dataset.camera;
           state.mediaRequested = true;

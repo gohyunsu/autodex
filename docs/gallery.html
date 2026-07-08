@@ -514,8 +514,8 @@
     }
 
     .object-tile img,
-    .pose-tile img,
     .pose-tile video,
+    .view-tile img,
     .tile-preview {
       width: 100%;
       height: 108px;
@@ -1230,7 +1230,7 @@
       }
       els['view-strip'].innerHTML = cameras.map((cam, idx) =>
         `<button class="view-tile ${cam === state.currentCamera ? 'active' : ''}" data-camera="${escapeHtml(cam)}" title="${escapeHtml(cam)}">
-          <div class="tile-preview view-preview"><span>View ${idx + 1}</span></div>
+          <img class="view-thumb" src="${viewThumbnailUrl(ep, cam)}" alt="" loading="lazy" decoding="async">
           <div class="tile-body">
             <div class="tile-title">View ${idx + 1}</div>
             <div class="tile-sub">${escapeHtml(cam)}</div>
@@ -1245,7 +1245,19 @@
           renderSelectorRows();
           applySelectedCameraView({resetTime: true});
         });
+        bindViewThumbnailFallback(btn, idx + 1);
       });
+    }
+
+    function bindViewThumbnailFallback(btn, viewNumber) {
+      const img = btn.querySelector('img.view-thumb');
+      if (!img) return;
+      img.addEventListener('error', () => {
+        const fallback = document.createElement('div');
+        fallback.className = 'tile-preview view-preview';
+        fallback.innerHTML = `<span>View ${viewNumber}</span>`;
+        img.replaceWith(fallback);
+      }, {once: true});
     }
 
     function showVideo(src, fallbackSrc = '') {
@@ -1410,7 +1422,7 @@
       els['pose-strip'].innerHTML = poseItems.map(item => {
         const active = item.key === state.currentKey;
         return `<button class="pose-tile ${active ? 'active' : ''}" data-key="${escapeHtml(item.key)}">
-          <img class="pose-thumb" src="${poseThumbnailUrl(item)}" alt="" loading="lazy" decoding="async">
+          <video src="${turntableUrl(item)}" muted loop playsinline preload="metadata"></video>
           <div class="tile-body">
             <div class="tile-title">${escapeHtml(item.rankLabel)}</div>
             <div class="tile-sub">${escapeHtml(titleize(item.hand))} | ${escapeHtml(titleize(item.scene))}</div>
@@ -1429,19 +1441,13 @@
           state.mediaRequested = true;
           renderAll();
         });
-        bindPoseThumbnailFallback(btn);
+        const vid = btn.querySelector('video');
+        btn.addEventListener('mouseenter', () => vid.play().catch(() => {}));
+        btn.addEventListener('mouseleave', () => {
+          vid.pause();
+          vid.currentTime = 0;
+        });
       });
-    }
-
-    function bindPoseThumbnailFallback(btn) {
-      const img = btn.querySelector('img.pose-thumb');
-      if (!img) return;
-      img.addEventListener('error', () => {
-        const fallback = document.createElement('div');
-        fallback.className = 'tile-preview pose-preview';
-        fallback.innerHTML = '<span>Pose thumbnail pending</span>';
-        img.replaceWith(fallback);
-      }, {once: true});
     }
 
     function videoUrl(ep, camera) {
@@ -1454,8 +1460,8 @@
       return `${ORIGINAL_HF_BASE}/experiments/${ep.hand}/${ep.objId}/${ep.rankStr}/${camera}.mp4`;
     }
 
-    function poseThumbnailUrl(ep) {
-      return `${PROXY_HF_BASE}/pose_thumbnails/${ep.hand}/${ep.objId}/${ep.rankStr}/thumb.webp`;
+    function viewThumbnailUrl(ep, camera) {
+      return `${PROXY_HF_BASE}/view_thumbnails/${ep.hand}/${ep.objId}/${ep.rankStr}/${camera}.webp`;
     }
 
     function turntableUrl(ep) {
